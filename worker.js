@@ -16,47 +16,35 @@ const WEBHOOK_ENDPOINT = '/webhook';
 const COINGECKO_API = 'https://api.coingecko.com/api/v3';
 
 /**
- * Main event listener for Cloudflare Worker
- * Handles all incoming HTTP requests
+ * Main export for Cloudflare Worker (ES Modules syntax)
  */
 export default {
     async fetch(request, env, ctx) {
-        return handleRequest(request);
+        try {
+            const url = new URL(request.url);
+            const path = url.pathname;
+            const method = request.method;
+            const workerUrl = `${url.protocol}//${url.host}`;
+
+            console.log('Incoming request:', { path, method });
+
+            if (method === 'POST' && path === WEBHOOK_ENDPOINT) {
+                const update = await request.json();
+                console.log('Received update:', JSON.stringify(update));
+                // Process the update in the background
+                ctx.waitUntil(handleTelegramUpdate(update));
+                return new Response('OK', { status: 200 });
+            } else if (method === 'GET' && path === '/setwebhook') {
+                return await setWebhook(encodeURIComponent(`${workerUrl}${WEBHOOK_ENDPOINT}`));
+            } else {
+                return new Response('Not Found', { status: 404 });
+            }
+        } catch (error) {
+            console.error('Request handling error:', error);
+            return new Response('Internal Server Error', { status: 500 });
+        }
     }
 };
-
-/**
- * Main request handler that routes different types of requests
- * - POST /webhook: Handles incoming Telegram updates
- * - GET /setwebhook: Sets up the webhook URL for Telegram
- * 
- * @param {FetchEvent} event - The incoming request event
- * @returns {Response} HTTP response
- */
-async function handleRequest(event) {
-    try {
-        const url = new URL(event.request.url);
-        const path = url.pathname;
-        const method = event.request.method;
-        const workerUrl = `${url.protocol}//${url.host}`;
-
-        console.log('Incoming request:', { path, method });
-
-        if (method === 'POST' && path === WEBHOOK_ENDPOINT) {
-            const update = await event.request.json();
-            console.log('Received update:', JSON.stringify(update));
-            event.waitUntil(handleTelegramUpdate(update));
-            return new Response('OK', { status: 200 });
-        } else if (method === 'GET' && path === '/setwebhook') {
-            return await setWebhook(encodeURIComponent(`${workerUrl}${WEBHOOK_ENDPOINT}`));
-        } else {
-            return new Response('Not Found', { status: 404 });
-        }
-    } catch (error) {
-        console.error('Request handling error:', error);
-        return new Response('Internal Server Error', { status: 500 });
-    }
-}
 
 /**
  * Sets up the Telegram webhook URL
@@ -342,4 +330,4 @@ async function sendMessage(chatId, text) {
         console.error('Error sending message:', error);
         throw error;
     }
-} 
+}
