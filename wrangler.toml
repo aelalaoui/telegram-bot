@@ -1,0 +1,6 @@
+name = "cryptobot"
+main = "worker.js"
+compatibility_date = "2025-09-14"
+
+[env.production]
+name = "cryptobot-production"
