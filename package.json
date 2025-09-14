@@ -1,6 +1,7 @@
 {
   "name": "cryptobot",
   "version": "1.0.0",
+  "type": "module",
   "scripts": {
     "postdeploy": "curl -X GET https://cryptobot.adil-ksjo.workers.dev/setwebhook"
   }
