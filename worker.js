@@ -6,9 +6,6 @@
  * market statistics, and trending coins.
  */
 
-// Your Telegram Bot Token from BotFather (https://t.me/botfather) My bot Token
-const TELEGRAM_BOT_TOKEN = '7476371019:AAH3tIMhz5TCQ10Zf9x5sdKLB5CzcMF9Tws';
-
 // Webhook endpoint where Telegram will send updates
 const WEBHOOK_ENDPOINT = '/webhook';
 
@@ -20,6 +17,11 @@ const COINGECKO_API = 'https://api.coingecko.com/api/v3';
  */
 export default {
     async fetch(request, env, ctx) {
+        // Vérifiez que le token existe
+        if (!env.TELEGRAM_BOT_TOKEN) {
+            return new Response('TELEGRAM_BOT_TOKEN not configured', { status: 500 });
+        }
+
         try {
             const url = new URL(request.url);
             const path = url.pathname;
@@ -31,11 +33,10 @@ export default {
             if (method === 'POST' && path === WEBHOOK_ENDPOINT) {
                 const update = await request.json();
                 console.log('Received update:', JSON.stringify(update));
-                // Process the update in the background
-                ctx.waitUntil(handleTelegramUpdate(update));
+                ctx.waitUntil(handleTelegramUpdate(update, env));
                 return new Response('OK', { status: 200 });
             } else if (method === 'GET' && path === '/setwebhook') {
-                return await setWebhook(encodeURIComponent(`${workerUrl}${WEBHOOK_ENDPOINT}`));
+                return await setWebhook(encodeURIComponent(`${workerUrl}${WEBHOOK_ENDPOINT}`), env);
             } else {
                 return new Response('Not Found', { status: 404 });
             }
@@ -51,11 +52,12 @@ export default {
  * This needs to be called once to tell Telegram where to send updates
  * 
  * @param {string} url - URL-encoded webhook endpoint
+ * @param {Object} env - Environment variables
  * @returns {Response} Setup result
  */
-async function setWebhook(url) {
+async function setWebhook(url, env) {
     try {
-        const webhookUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${url}`;
+        const webhookUrl = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook?url=${url}`;
         console.log('Setting webhook URL:', webhookUrl);
         const response = await fetch(webhookUrl);
         const result = await response.json();
@@ -82,8 +84,9 @@ async function setWebhook(url) {
  * - /global: Show global market stats
  * 
  * @param {Object} update - Telegram update object
+ * @param {Object} env - Environment variables
  */
-async function handleTelegramUpdate(update) {
+async function handleTelegramUpdate(update, env) {
     if (!update.message || !update.message.text) {
         console.log('Invalid update received:', update);
         return;
@@ -102,21 +105,22 @@ async function handleTelegramUpdate(update) {
                 '/top10 \\- Get top 10 cryptocurrencies by market cap\n' +
                 '/trending \\- Show trending coins\n' +
                 '/global \\- Show global market stats\n' +
-                '/help \\- Show this help message'
+                '/help \\- Show this help message',
+                env
             );
         } else if (text === '/top10') {
-            await handleTop10Command(chatId);
+            await handleTop10Command(chatId, env);
         } else if (text === '/trending') {
-            await handleTrendingCommand(chatId);
+            await handleTrendingCommand(chatId, env);
         } else if (text === '/global') {
-            await handleGlobalCommand(chatId);
+            await handleGlobalCommand(chatId, env);
         } else if (text.startsWith('/price ')) {
             const coin = text.split(' ')[1];
-            await handlePriceCommand(chatId, coin);
+            await handlePriceCommand(chatId, coin, env);
         }
     } catch (error) {
         console.error('Error handling update:', error);
-        await sendMessage(chatId, '❌ Sorry, an error occurred\\. Please try again later\\.');
+        await sendMessage(chatId, '❌ Sorry, an error occurred\\. Please try again later\\.', env);
     }
 }
 
@@ -125,8 +129,9 @@ async function handleTelegramUpdate(update) {
  * Shows total market cap, volume, BTC dominance, etc.
  * 
  * @param {number} chatId - Telegram chat ID
+ * @param {Object} env - Environment variables
  */
-async function handleGlobalCommand(chatId) {
+async function handleGlobalCommand(chatId, env) {
     try {
         const response = await fetch(`${COINGECKO_API}/global`);
         if (!response.ok) throw new Error(`API error: ${response.status}`);
@@ -140,13 +145,12 @@ async function handleGlobalCommand(chatId) {
             `24h Volume: $${escapeMarkdown(stats.total_volume.usd.toLocaleString())}\n` +
             `BTC Dominance: ${escapeMarkdown(stats.market_cap_percentage.btc.toFixed(2))}\\%\n` +
             `Active Cryptocurrencies: ${escapeMarkdown(stats.active_cryptocurrencies.toString())}\n` +
-            `Markets: ${escapeMarkdown(stats.markets.toString())}\n\n` +
-            `/help \\- Show commands`;
+            `Markets: ${escapeMarkdown(stats.markets.toString())}`;
 
-        await sendMessage(chatId, message);
+        await sendMessage(chatId, message, env);
     } catch (error) {
         console.error('Error fetching global stats:', error);
-        await sendMessage(chatId, '❌ Failed to fetch global market stats\\. Please try again later\\.');
+        await sendMessage(chatId, '❌ Failed to fetch global market stats\\. Please try again later\\.', env);
     }
 }
 
@@ -155,8 +159,9 @@ async function handleGlobalCommand(chatId) {
  * Shows name, market cap rank, and BTC price
  * 
  * @param {number} chatId - Telegram chat ID
+ * @param {Object} env - Environment variables
  */
-async function handleTrendingCommand(chatId) {
+async function handleTrendingCommand(chatId, env) {
     try {
         const response = await fetch(`${COINGECKO_API}/search/trending`);
         if (!response.ok) throw new Error(`API error: ${response.status}`);
@@ -171,12 +176,10 @@ async function handleTrendingCommand(chatId) {
                 `Price BTC: ${escapeMarkdown(coin.price_btc.toFixed(8))}\n\n`;
         });
 
-        message += '\n/help \\- Show commands';
-
-        await sendMessage(chatId, message);
+        await sendMessage(chatId, message, env);
     } catch (error) {
         console.error('Error fetching trending coins:', error);
-        await sendMessage(chatId, '❌ Failed to fetch trending coins\\. Please try again later\\.');
+        await sendMessage(chatId, '❌ Failed to fetch trending coins\\. Please try again later\\.', env);
     }
 }
 
@@ -185,8 +188,9 @@ async function handleTrendingCommand(chatId) {
  * Shows price, 24h change, market cap, and volume
  * 
  * @param {number} chatId - Telegram chat ID
+ * @param {Object} env - Environment variables
  */
-async function handleTop10Command(chatId) {
+async function handleTop10Command(chatId, env) {
     try {
         // Add API version and platform parameters to avoid rate limiting
         const headers = {
@@ -220,12 +224,10 @@ async function handleTop10Command(chatId) {
             message += `📊 Volume: $${escapeMarkdown(coin.total_volume.toLocaleString())}\n\n`;
         });
 
-        message += `/help \\- Show commands`;
-
-        await sendMessage(chatId, message);
+        await sendMessage(chatId, message, env);
     } catch (error) {
         console.error('Error fetching top 10:', error);
-        await sendMessage(chatId, '❌ Failed to fetch top 10 cryptocurrencies\\. Please try again later\\.');
+        await sendMessage(chatId, '❌ Failed to fetch top 10 cryptocurrencies\\. Please try again later\\.', env);
     }
 }
 
@@ -235,8 +237,9 @@ async function handleTop10Command(chatId) {
  * 
  * @param {number} chatId - Telegram chat ID
  * @param {string} coin - Name or symbol of the cryptocurrency to look up
+ * @param {Object} env - Environment variables
  */
-async function handlePriceCommand(chatId, coin) {
+async function handlePriceCommand(chatId, coin, env) {
     try {
         // First search for the coin to get its ID
         const searchResponse = await fetch(
@@ -250,7 +253,7 @@ async function handlePriceCommand(chatId, coin) {
 
         const searchData = await searchResponse.json();
         if (!searchData.coins || searchData.coins.length === 0) {
-            await sendMessage(chatId, `❌ Could not find cryptocurrency: ${escapeMarkdown(coin)}`);
+            await sendMessage(chatId, `❌ Could not find cryptocurrency: ${escapeMarkdown(coin)}`, env);
             return;
         }
 
@@ -276,13 +279,12 @@ async function handlePriceCommand(chatId, coin) {
             `📉 24h Low: $${escapeMarkdown(data.market_data.low_24h.usd.toLocaleString())}\n` +
             `💎 Market Cap: $${escapeMarkdown(data.market_data.market_cap.usd.toLocaleString())}\n` +
             `📊 Market Cap Rank: \\#${data.market_cap_rank}\n` +
-            `💫 Volume: $${escapeMarkdown(data.market_data.total_volume.usd.toLocaleString())}\n` +
-            `/help \\- Show commands`;
+            `💫 Volume: $${escapeMarkdown(data.market_data.total_volume.usd.toLocaleString())}`;
 
-        await sendMessage(chatId, message);
+        await sendMessage(chatId, message, env);
     } catch (error) {
         console.error('Error fetching coin price:', error);
-        await sendMessage(chatId, `❌ Failed to fetch price for ${escapeMarkdown(coin)}\\. Please try again later\\.`);
+        await sendMessage(chatId, `❌ Failed to fetch price for ${escapeMarkdown(coin)}\\. Please try again later\\.`, env);
     }
 }
 
@@ -304,11 +306,12 @@ function escapeMarkdown(text) {
  * 
  * @param {number} chatId - Telegram chat ID
  * @param {string} text - Message text (with MarkdownV2 formatting)
+ * @param {Object} env - Environment variables
  * @returns {Promise<Object>} Telegram API response
  */
-async function sendMessage(chatId, text) {
+async function sendMessage(chatId, text, env) {
     try {
-        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+        const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
         console.log('Sending message:', { chatId, text });
 
         const response = await fetch(url, {
