@@ -4,3 +4,7 @@ compatibility_date = "2025-09-14"
 
 [env.production]
 name = "cryptobot-production"
+
+# wrangler.toml (wrangler v3.88.0^)
+[observability.logs]
+enabled = true
