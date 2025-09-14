@@ -168,7 +168,7 @@ async function handleTrendingCommand(chatId) {
             const coin = item.item;
             message += `${index + 1}\\. ${escapeMarkdown(coin.name)} \\(${escapeMarkdown(coin.symbol.toUpperCase())}\\)\n` +
                 `Market Cap Rank: \\#${coin.market_cap_rank}\n` +
-                `Price BTC: ${escapeMarkdown(coin.price_btc.toFixed(8))}\n`;
+                `Price BTC: ${escapeMarkdown(coin.price_btc.toFixed(8))}\n\n`;
         });
 
         message += '\n/help \\- Show this help message';
@@ -220,7 +220,7 @@ async function handleTop10Command(chatId) {
             message += `📊 Volume: $${escapeMarkdown(coin.total_volume.toLocaleString())}\n\n`;
         });
 
-        message += '\n/help \\- Show this help message';
+        message += `/help \\- Show this help message`;
 
         await sendMessage(chatId, message);
     } catch (error) {
@@ -276,7 +276,7 @@ async function handlePriceCommand(chatId, coin) {
             `📉 24h Low: $${escapeMarkdown(data.market_data.low_24h.usd.toLocaleString())}\n` +
             `💎 Market Cap: $${escapeMarkdown(data.market_data.market_cap.usd.toLocaleString())}\n` +
             `📊 Market Cap Rank: \\#${data.market_cap_rank}\n` +
-            `💫 Volume: $${escapeMarkdown(data.market_data.total_volume.usd.toLocaleString())}` +
+            `💫 Volume: $${escapeMarkdown(data.market_data.total_volume.usd.toLocaleString())}\n` +
             `/help \\- Show this help message`;
 
         await sendMessage(chatId, message);
