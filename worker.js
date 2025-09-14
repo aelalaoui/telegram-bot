@@ -19,9 +19,11 @@ const COINGECKO_API = 'https://api.coingecko.com/api/v3';
  * Main event listener for Cloudflare Worker
  * Handles all incoming HTTP requests
  */
-addEventListener('fetch', event => {
-    event.respondWith(handleRequest(event));
-});
+export default {
+    async fetch(request, env, ctx) {
+        return handleRequest(request);
+    }
+};
 
 /**
  * Main request handler that routes different types of requests
