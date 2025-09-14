@@ -140,7 +140,7 @@ async function handleGlobalCommand(chatId) {
             `24h Volume: $${escapeMarkdown(stats.total_volume.usd.toLocaleString())}\n` +
             `BTC Dominance: ${escapeMarkdown(stats.market_cap_percentage.btc.toFixed(2))}\\%\n` +
             `Active Cryptocurrencies: ${escapeMarkdown(stats.active_cryptocurrencies.toString())}\n` +
-            `Markets: ${escapeMarkdown(stats.markets.toString())}` +
+            `Markets: ${escapeMarkdown(stats.markets.toString())}\n\n` +
             `/help \\- Show this help message`;
 
         await sendMessage(chatId, message);
@@ -168,9 +168,10 @@ async function handleTrendingCommand(chatId) {
             const coin = item.item;
             message += `${index + 1}\\. ${escapeMarkdown(coin.name)} \\(${escapeMarkdown(coin.symbol.toUpperCase())}\\)\n` +
                 `Market Cap Rank: \\#${coin.market_cap_rank}\n` +
-                `Price BTC: ${escapeMarkdown(coin.price_btc.toFixed(8))}\n\n` +
-                `/help \\- Show this help message`;
+                `Price BTC: ${escapeMarkdown(coin.price_btc.toFixed(8))}\n`;
         });
+
+        message += '\n/help \\- Show this help message';
 
         await sendMessage(chatId, message);
     } catch (error) {
@@ -217,8 +218,9 @@ async function handleTop10Command(chatId) {
             message += `${priceChangeIcon} 24h: ${escapeMarkdown(priceChange.toFixed(2))}\\%\n`;
             message += `💎 Market Cap: $${escapeMarkdown(coin.market_cap.toLocaleString())}\n`;
             message += `📊 Volume: $${escapeMarkdown(coin.total_volume.toLocaleString())}\n\n`;
-            message += `/help \\- Show this help message`;
         });
+
+        message += '\n/help \\- Show this help message';
 
         await sendMessage(chatId, message);
     } catch (error) {
