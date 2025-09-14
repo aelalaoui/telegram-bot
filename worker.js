@@ -141,7 +141,7 @@ async function handleGlobalCommand(chatId) {
             `BTC Dominance: ${escapeMarkdown(stats.market_cap_percentage.btc.toFixed(2))}\\%\n` +
             `Active Cryptocurrencies: ${escapeMarkdown(stats.active_cryptocurrencies.toString())}\n` +
             `Markets: ${escapeMarkdown(stats.markets.toString())}\n\n` +
-            `/help \\- Show this help message`;
+            `/help \\- Show commands`;
 
         await sendMessage(chatId, message);
     } catch (error) {
@@ -171,7 +171,7 @@ async function handleTrendingCommand(chatId) {
                 `Price BTC: ${escapeMarkdown(coin.price_btc.toFixed(8))}\n\n`;
         });
 
-        message += '\n/help \\- Show this help message';
+        message += '\n/help \\- Show commands';
 
         await sendMessage(chatId, message);
     } catch (error) {
@@ -220,7 +220,7 @@ async function handleTop10Command(chatId) {
             message += `📊 Volume: $${escapeMarkdown(coin.total_volume.toLocaleString())}\n\n`;
         });
 
-        message += `/help \\- Show this help message`;
+        message += `/help \\- Show commands`;
 
         await sendMessage(chatId, message);
     } catch (error) {
@@ -277,7 +277,7 @@ async function handlePriceCommand(chatId, coin) {
             `💎 Market Cap: $${escapeMarkdown(data.market_data.market_cap.usd.toLocaleString())}\n` +
             `📊 Market Cap Rank: \\#${data.market_cap_rank}\n` +
             `💫 Volume: $${escapeMarkdown(data.market_data.total_volume.usd.toLocaleString())}\n` +
-            `/help \\- Show this help message`;
+            `/help \\- Show commands`;
 
         await sendMessage(chatId, message);
     } catch (error) {
