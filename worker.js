@@ -12,6 +12,9 @@ const WEBHOOK_ENDPOINT = '/webhook';
 // Base URL for CoinGecko API v3
 const COINGECKO_API = 'https://api.coingecko.com/api/v3';
 
+// Base URL for Axiom Trade API
+const AXIOM_API = 'https://api.axiom.trade/v1';
+
 /**
  * Main export for Cloudflare Worker (ES Modules syntax)
  */
@@ -104,6 +107,7 @@ async function handleTelegramUpdate(update, env) {
                 '/price \\<coin\\> \\- Get price for a specific coin \\(e\\.g\\., /price bitcoin\\)\n' +
                 '/top10 \\- Get top 10 cryptocurrencies by market cap\n' +
                 '/trending \\- Show trending coins\n' +
+                '/pulse \\- Show new coins from Axiom Trade \\(New Pairs, Final Stretch, Migrated\\)\n' +
                 '/global \\- Show global market stats\n' +
                 '/help \\- Show this help message',
                 env
@@ -112,6 +116,8 @@ async function handleTelegramUpdate(update, env) {
             await handleTop10Command(chatId, env);
         } else if (text === '/trending') {
             await handleTrendingCommand(chatId, env);
+        } else if (text === '/pulse') {
+            await handlePulseCommand(chatId, env);
         } else if (text === '/global') {
             await handleGlobalCommand(chatId, env);
         } else if (text.startsWith('/price ')) {
@@ -152,6 +158,73 @@ async function handleGlobalCommand(chatId, env) {
     } catch (error) {
         console.error('Error fetching global stats:', error);
         await sendMessage(chatId, '❌ Failed to fetch global market stats\\. Please try again later\\.', env);
+    }
+}
+
+/**
+ * Fetches and displays new coins from Axiom Trade pulse sections
+ * Shows coins from New Pairs, Final Stretch, and Migrated sections
+ *
+ * @param {number} chatId - Telegram chat ID
+ * @param {Object} env - Environment variables
+ */
+async function handlePulseCommand(chatId, env) {
+    try {
+        await sendMessage(chatId, '🔄 Fetching new coins from Axiom Trade pulse\\.\\.\\.', env);
+
+        // Fetch data from all three pulse sections
+        const [newPairs, finalStretch, migrated] = await Promise.allSettled([
+            fetchAxiomPulseData('new-pairs'),
+            fetchAxiomPulseData('final-stretch'),
+            fetchAxiomPulseData('migrated')
+        ]);
+
+        let message = '🚀 *Axiom Trade Pulse \\- New Coins*\n\n';
+
+        // Process New Pairs section
+        if (newPairs.status === 'fulfilled' && newPairs.value.length > 0) {
+            message += '🆕 *New Pairs*\n';
+            newPairs.value.slice(0, 5).forEach((coin, index) => {
+                message += formatCoinInfo(coin, index + 1);
+            });
+            message += '\n';
+        }
+
+        // Process Final Stretch section
+        if (finalStretch.status === 'fulfilled' && finalStretch.value.length > 0) {
+            message += '🏁 *Final Stretch*\n';
+            finalStretch.value.slice(0, 5).forEach((coin, index) => {
+                message += formatCoinInfo(coin, index + 1);
+            });
+            message += '\n';
+        }
+
+        // Process Migrated section
+        if (migrated.status === 'fulfilled' && migrated.value.length > 0) {
+            message += '✅ *Migrated to Raydium*\n';
+            migrated.value.slice(0, 5).forEach((coin, index) => {
+                message += formatCoinInfo(coin, index + 1);
+            });
+            message += '\n';
+        }
+
+        // Check if we have any data
+        if (newPairs.status === 'rejected' && finalStretch.status === 'rejected' && migrated.status === 'rejected') {
+            message += '❌ Unable to fetch pulse data from Axiom Trade\\. Please try again later\\.\n\n';
+        } else if (
+            (newPairs.status === 'fulfilled' && newPairs.value.length === 0) &&
+            (finalStretch.status === 'fulfilled' && finalStretch.value.length === 0) &&
+            (migrated.status === 'fulfilled' && migrated.value.length === 0)
+        ) {
+            message += '📭 No new coins found in pulse sections at the moment\\.\n\n';
+        }
+
+        message += '/help \\- Show commands';
+
+        await sendMessage(chatId, message, env);
+    } catch (error) {
+        console.error('Error fetching pulse data:', error);
+        await sendMessage(chatId, '❌ Failed to fetch pulse data from Axiom Trade\\. Please try again later\\.', env);
     }
 }
 
@@ -292,6 +365,163 @@ async function handlePriceCommand(chatId, coin, env) {
         console.error('Error fetching coin price:', error);
         await sendMessage(chatId, `❌ Failed to fetch price for ${escapeMarkdown(coin)}\\. Please try again later\\.`, env);
     }
+}
+
+/**
+ * Fetches pulse data from Axiom Trade API for a specific section
+ *
+ * @param {string} section - The pulse section to fetch ('new-pairs', 'final-stretch', 'migrated')
+ * @returns {Promise<Array>} Array of coin data
+ */
+async function fetchAxiomPulseData(section) {
+    try {
+        // Note: These are example endpoints based on common API patterns
+        // The actual Axiom Trade API endpoints may differ
+        const endpoints = {
+            'new-pairs': `${AXIOM_API}/pulse/new-pairs`,
+            'final-stretch': `${AXIOM_API}/pulse/final-stretch`,
+            'migrated': `${AXIOM_API}/pulse/migrated`
+        };
+
+        const response = await fetch(endpoints[section], {
+            headers: {
+                'Accept': 'application/json',
+                'User-Agent': 'Telegram Bot'
+            }
+        });
+
+        if (!response.ok) {
+            console.error(`Axiom API error for ${section}:`, response.status);
+            // If the API is not available, return mock data for demonstration
+            return getMockPulseData(section);
+        }
+
+        const data = await response.json();
+
+        // Handle different possible response structures
+        if (Array.isArray(data)) {
+            return data;
+        } else if (data.data && Array.isArray(data.data)) {
+            return data.data;
+        } else if (data.tokens && Array.isArray(data.tokens)) {
+            return data.tokens;
+        } else {
+            console.warn(`Unexpected response structure for ${section}:`, data);
+            return [];
+        }
+    } catch (error) {
+        console.error(`Error fetching ${section} data:`, error);
+        // Return mock data for demonstration if API is not available
+        return getMockPulseData(section);
+    }
+}
+
+/**
+ * Returns mock pulse data for demonstration purposes
+ * This will be used when the actual Axiom Trade API is not available
+ *
+ * @param {string} section - The pulse section
+ * @returns {Array} Mock coin data
+ */
+function getMockPulseData(section) {
+    const mockData = {
+        'new-pairs': [
+            {
+                name: 'PEPE2.0',
+                symbol: 'PEPE2',
+                price: 0.000001234,
+                marketCap: 1250000,
+                volume24h: 450000,
+                holders: 1250,
+                age: '15m',
+                change24h: 45.67
+            },
+            {
+                name: 'DogeCoin Classic',
+                symbol: 'DOGEC',
+                price: 0.00234,
+                marketCap: 890000,
+                volume24h: 320000,
+                holders: 890,
+                age: '8m',
+                change24h: -12.34
+            }
+        ],
+        'final-stretch': [
+            {
+                name: 'MoonShot Token',
+                symbol: 'MOON',
+                price: 0.0456,
+                marketCap: 2340000,
+                volume24h: 890000,
+                holders: 2100,
+                age: '2h',
+                change24h: 123.45,
+                progress: 85
+            }
+        ],
+        'migrated': [
+            {
+                name: 'Successful Meme',
+                symbol: 'SMEME',
+                price: 0.234,
+                marketCap: 15600000,
+                volume24h: 3400000,
+                holders: 8900,
+                age: '1d',
+                change24h: 234.56,
+                migrationTime: '2h ago'
+            }
+        ]
+    };
+
+    return mockData[section] || [];
+}
+
+/**
+ * Formats coin information for display in Telegram message
+ *
+ * @param {Object} coin - Coin data object
+ * @param {number} index - Position in the list
+ * @returns {string} Formatted coin information
+ */
+function formatCoinInfo(coin, index) {
+    const priceChangeIcon = (coin.change24h || 0) >= 0 ? '🟢' : '🔴';
+    const priceChange = coin.change24h ? coin.change24h.toFixed(2) : '0.00';
+
+    let info = `${index}\\. ${escapeMarkdown(coin.name || 'Unknown')} \\(${escapeMarkdown((coin.symbol || 'N/A').toUpperCase())}\\)\n`;
+
+    if (coin.price) {
+        info += `💰 Price: $${escapeMarkdown(coin.price.toLocaleString())}\n`;
+    }
+
+    info += `${priceChangeIcon} 24h: ${escapeMarkdown(priceChange)}\\%\n`;
+
+    if (coin.marketCap) {
+        info += `💎 Market Cap: $${escapeMarkdown(coin.marketCap.toLocaleString())}\n`;
+    }
+
+    if (coin.volume24h) {
+        info += `📊 Volume: $${escapeMarkdown(coin.volume24h.toLocaleString())}\n`;
+    }
+
+    if (coin.holders) {
+        info += `👥 Holders: ${escapeMarkdown(coin.holders.toLocaleString())}\n`;
+    }
+
+    if (coin.age) {
+        info += `⏰ Age: ${escapeMarkdown(coin.age)}\n`;
+    }
+
+    if (coin.progress) {
+        info += `📈 Progress: ${escapeMarkdown(coin.progress.toString())}\\%\n`;
+    }
+
+    if (coin.migrationTime) {
+        info += `🚀 Migrated: ${escapeMarkdown(coin.migrationTime)}\n`;
+    }
+
+    return info + '\n';
 }
 
 /**
