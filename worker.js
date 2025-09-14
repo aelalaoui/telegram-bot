@@ -145,7 +145,8 @@ async function handleGlobalCommand(chatId, env) {
             `24h Volume: $${escapeMarkdown(stats.total_volume.usd.toLocaleString())}\n` +
             `BTC Dominance: ${escapeMarkdown(stats.market_cap_percentage.btc.toFixed(2))}\\%\n` +
             `Active Cryptocurrencies: ${escapeMarkdown(stats.active_cryptocurrencies.toString())}\n` +
-            `Markets: ${escapeMarkdown(stats.markets.toString())}`;
+            `Markets: ${escapeMarkdown(stats.markets.toString())}\n\n` +
+            `/help \\- Show commands`;
 
         await sendMessage(chatId, message, env);
     } catch (error) {
@@ -175,6 +176,8 @@ async function handleTrendingCommand(chatId, env) {
                 `Market Cap Rank: \\#${coin.market_cap_rank}\n` +
                 `Price BTC: ${escapeMarkdown(coin.price_btc.toFixed(8))}\n\n`;
         });
+
+        message += '\n/help \\- Show commands';
 
         await sendMessage(chatId, message, env);
     } catch (error) {
@@ -223,6 +226,8 @@ async function handleTop10Command(chatId, env) {
             message += `💎 Market Cap: $${escapeMarkdown(coin.market_cap.toLocaleString())}\n`;
             message += `📊 Volume: $${escapeMarkdown(coin.total_volume.toLocaleString())}\n\n`;
         });
+
+        message += '\n/help \\- Show commands';
 
         await sendMessage(chatId, message, env);
     } catch (error) {
@@ -279,7 +284,8 @@ async function handlePriceCommand(chatId, coin, env) {
             `📉 24h Low: $${escapeMarkdown(data.market_data.low_24h.usd.toLocaleString())}\n` +
             `💎 Market Cap: $${escapeMarkdown(data.market_data.market_cap.usd.toLocaleString())}\n` +
             `📊 Market Cap Rank: \\#${data.market_cap_rank}\n` +
-            `💫 Volume: $${escapeMarkdown(data.market_data.total_volume.usd.toLocaleString())}`;
+            `💫 Volume: $${escapeMarkdown(data.market_data.total_volume.usd.toLocaleString())}\n` +
+            `/help \\- Show commands`;
 
         await sendMessage(chatId, message, env);
     } catch (error) {
