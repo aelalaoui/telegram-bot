@@ -1,11 +1,28 @@
-name = "cryptobot"
+name = "solana-wallet-monitor"
 main = "worker.js"
 compatibility_date = "2025-09-14"
 
-[env.production]
-name = "cryptobot-production"
+# Variables d'environnement pour le bot
+[vars]
+# Ces variables doivent être définies via wrangler secrets ou dans le dashboard Cloudflare
+# TELEGRAM_BOT_TOKEN = "your_telegram_bot_token_here"
+# HELIUS_API_KEY = "your_helius_api_key_here"
+# WORKER_DOMAIN = "your-worker-subdomain.workers.dev"
 
-# wrangler.toml (wrangler v3.88.0^)
+# Stockage KV pour les données des portefeuilles surveillés
+[[kv_namespaces]]
+binding = "WALLET_STORAGE"
+id = "wallet_storage_namespace"
+preview_id = "wallet_storage_preview"
+
+[env.production]
+name = "solana-wallet-monitor-production"
+
+[[env.production.kv_namespaces]]
+binding = "WALLET_STORAGE"
+id = "wallet_storage_production"
+
+# Configuration des logs
 [observability.logs]
 enabled = true
 

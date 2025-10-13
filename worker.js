@@ -1,28 +1,34 @@
 /**
- * Telegram Cryptocurrency Bot
- * 
- * This bot provides real-time cryptocurrency information using the CoinGecko API.
- * It runs on Cloudflare Workers and handles various commands to fetch crypto prices,
- * market statistics, and trending coins.
+ * Telegram Solana Wallet Monitor Bot
+ *
+ * This bot monitors Solana wallet transactions using Helius API webhooks.
+ * It allows users to add wallet addresses to monitor and receives real-time
+ * transaction notifications via Telegram.
  */
 
 // Webhook endpoint where Telegram will send updates
 const WEBHOOK_ENDPOINT = '/webhook';
 
-// Base URL for CoinGecko API v3
-const COINGECKO_API = 'https://api.coingecko.com/api/v3';
+// Webhook endpoint for Helius transaction notifications
+const HELIUS_WEBHOOK_ENDPOINT = '/helius-webhook';
 
-// Base URL for Axiom Trade API
-const AXIOM_API = 'https://api.axiom.trade/v1';
+// Base URL for Helius API
+const HELIUS_API = 'https://api.helius.xyz/v0';
+
+// Solana explorer base URL
+const SOLSCAN_BASE = 'https://solscan.io';
 
 /**
  * Main export for Cloudflare Worker (ES Modules syntax)
  */
 export default {
     async fetch(request, env, ctx) {
-        // Vérifiez que le token existe
+        // Vérifiez que les tokens existent
         if (!env.TELEGRAM_BOT_TOKEN) {
             return new Response('TELEGRAM_BOT_TOKEN not configured', { status: 500 });
+        }
+        if (!env.HELIUS_API_KEY) {
+            return new Response('HELIUS_API_KEY not configured', { status: 500 });
         }
 
         try {
@@ -35,11 +41,16 @@ export default {
 
             if (method === 'POST' && path === WEBHOOK_ENDPOINT) {
                 const update = await request.json();
-                console.log('Received update:', JSON.stringify(update));
+                console.log('Received Telegram update:', JSON.stringify(update));
                 ctx.waitUntil(handleTelegramUpdate(update, env));
                 return new Response('OK', { status: 200 });
+            } else if (method === 'POST' && path === HELIUS_WEBHOOK_ENDPOINT) {
+                const transactions = await request.json();
+                console.log('Received Helius webhook:', JSON.stringify(transactions));
+                ctx.waitUntil(handleHeliusWebhook(transactions, env));
+                return new Response('OK', { status: 200 });
             } else if (method === 'GET' && path === '/setwebhook') {
-                return await setWebhook(encodeURIComponent(`${workerUrl}${WEBHOOK_ENDPOINT}`), env);
+                return await setTelegramWebhook(encodeURIComponent(`${workerUrl}${WEBHOOK_ENDPOINT}`), env);
             } else {
                 return new Response('Not Found', { status: 404 });
             }
@@ -58,7 +69,7 @@ export default {
  * @param {Object} env - Environment variables
  * @returns {Response} Setup result
  */
-async function setWebhook(url, env) {
+async function setTelegramWebhook(url, env) {
     try {
         const webhookUrl = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook?url=${url}`;
         console.log('Setting webhook URL:', webhookUrl);
@@ -81,11 +92,10 @@ async function setWebhook(url, env) {
  * Handles incoming Telegram updates and routes different commands
  * Available commands:
  * - /start, /help: Show help message
- * - /price <coin>: Get specific coin price
- * - /top10: Show top 10 cryptocurrencies
- * - /trending: Show trending coins
- * - /global: Show global market stats
- * 
+ * - /addwallet <address>: Add a wallet address to monitor
+ * - /removewallet <address>: Remove a wallet address from monitoring
+ * - /mywallets: List monitored wallet addresses
+ *
  * @param {Object} update - Telegram update object
  * @param {Object} env - Environment variables
  */
@@ -102,27 +112,22 @@ async function handleTelegramUpdate(update, env) {
     try {
         if (text === '/start' || text === '/help') {
             await sendMessage(chatId,
-                'Welcome to the Crypto Price Bot\\! 🚀\n\n' +
+                'Welcome to the Solana Wallet Monitor Bot\\! 🚀\n\n' +
                 'Available commands:\n' +
-                '/price \\<coin\\> \\- Get price for a specific coin \\(e\\.g\\., /price bitcoin\\)\n' +
-                '/top10 \\- Get top 10 cryptocurrencies by market cap\n' +
-                '/trending \\- Show trending coins\n' +
-                '/pulse \\- Show new coins from Axiom Trade \\(New Pairs, Final Stretch, Migrated\\)\n' +
-                '/global \\- Show global market stats\n' +
+                '/addwallet \\<address\\> \\- Add a wallet address to monitor\n' +
+                '/removewallet \\<address\\> \\- Remove a wallet address from monitoring\n' +
+                '/mywallets \\- List monitored wallet addresses\n' +
                 '/help \\- Show this help message',
                 env
             );
-        } else if (text === '/top10') {
-            await handleTop10Command(chatId, env);
-        } else if (text === '/trending') {
-            await handleTrendingCommand(chatId, env);
-        } else if (text === '/pulse') {
-            await handlePulseCommand(chatId, env);
-        } else if (text === '/global') {
-            await handleGlobalCommand(chatId, env);
-        } else if (text.startsWith('/price ')) {
-            const coin = text.split(' ')[1];
-            await handlePriceCommand(chatId, coin, env);
+        } else if (text.startsWith('/addwallet ')) {
+            const address = text.split(' ')[1];
+            await handleAddWalletCommand(chatId, address, env);
+        } else if (text.startsWith('/removewallet ')) {
+            const address = text.split(' ')[1];
+            await handleRemoveWalletCommand(chatId, address, env);
+        } else if (text === '/mywallets') {
+            await handleMyWalletsCommand(chatId, env);
         }
     } catch (error) {
         console.error('Error handling update:', error);
@@ -131,409 +136,555 @@ async function handleTelegramUpdate(update, env) {
 }
 
 /**
- * Fetches and formats global cryptocurrency market statistics
- * Shows total market cap, volume, BTC dominance, etc.
- * 
- * @param {number} chatId - Telegram chat ID
+ * Handles incoming webhooks from Helius API for transaction notifications
+ * Following official Helius webhook structure: https://www.helius.dev/docs/data-streaming/quickstart
+ *
+ * @param {Array} transactions - Array of transaction data from Helius webhook
  * @param {Object} env - Environment variables
  */
-async function handleGlobalCommand(chatId, env) {
-    try {
-        const response = await fetch(`${COINGECKO_API}/global`);
-        if (!response.ok) throw new Error(`API error: ${response.status}`);
+async function handleHeliusWebhook(transactions, env) {
+    console.log('Processing Helius webhook with transactions:', transactions.length);
 
-        const data = await response.json();
-        const stats = data.data;
+    // Helius sends an array of transactions
+    if (!Array.isArray(transactions)) {
+        console.error('Invalid webhook payload: expected array of transactions');
+        return;
+    }
 
-        const message =
-            '🌍 *Global Crypto Market Stats*\n\n' +
-            `Total Market Cap: $${escapeMarkdown(stats.total_market_cap.usd.toLocaleString())}\n` +
-            `24h Volume: $${escapeMarkdown(stats.total_volume.usd.toLocaleString())}\n` +
-            `BTC Dominance: ${escapeMarkdown(stats.market_cap_percentage.btc.toFixed(2))}\\%\n` +
-            `Active Cryptocurrencies: ${escapeMarkdown(stats.active_cryptocurrencies.toString())}\n` +
-            `Markets: ${escapeMarkdown(stats.markets.toString())}\n\n` +
-            `/help \\- Show commands`;
+    // Process each transaction and notify relevant users
+    for (const transaction of transactions) {
+        try {
+            // Validate transaction structure according to Helius docs
+            if (!transaction.signature || !transaction.slot) {
+                console.log('Skipping invalid transaction:', transaction);
+                continue;
+            }
 
-        await sendMessage(chatId, message, env);
-    } catch (error) {
-        console.error('Error fetching global stats:', error);
-        await sendMessage(chatId, '❌ Failed to fetch global market stats\\. Please try again later\\.', env);
+            // Format the transaction message
+            const message = formatTransactionMessage(transaction);
+
+            // Get wallet addresses involved in this transaction
+            const involvedAddresses = new Set();
+
+            // Add fee payer (always present in Helius enhanced webhooks)
+            if (transaction.feePayer) {
+                involvedAddresses.add(transaction.feePayer);
+            }
+
+            // Add addresses from account keys (Helius enhanced format)
+            if (transaction.accountData) {
+                transaction.accountData.forEach(account => {
+                    if (account.account) {
+                        involvedAddresses.add(account.account);
+                    }
+                });
+            }
+
+            // Add addresses from token transfers (Helius enhanced format)
+            if (transaction.tokenTransfers && Array.isArray(transaction.tokenTransfers)) {
+                transaction.tokenTransfers.forEach(transfer => {
+                    if (transfer.fromUserAccount) involvedAddresses.add(transfer.fromUserAccount);
+                    if (transfer.toUserAccount) involvedAddresses.add(transfer.toUserAccount);
+                });
+            }
+
+            // Add addresses from native transfers (Helius enhanced format)
+            if (transaction.nativeTransfers && Array.isArray(transaction.nativeTransfers)) {
+                transaction.nativeTransfers.forEach(transfer => {
+                    if (transfer.fromUserAccount) involvedAddresses.add(transfer.fromUserAccount);
+                    if (transfer.toUserAccount) involvedAddresses.add(transfer.toUserAccount);
+                });
+            }
+
+            // Add addresses from instruction accounts (fallback for standard format)
+            if (transaction.transaction && transaction.transaction.message && transaction.transaction.message.accountKeys) {
+                transaction.transaction.message.accountKeys.forEach(key => {
+                    if (typeof key === 'string') {
+                        involvedAddresses.add(key);
+                    } else if (key.pubkey) {
+                        involvedAddresses.add(key.pubkey);
+                    }
+                });
+            }
+
+            // Notify users monitoring any of these addresses
+            const notifiedUsers = new Set();
+            let notificationCount = 0;
+
+            for (const address of involvedAddresses) {
+                const users = await getUsersForWallet(address, env);
+                for (const userId of users) {
+                    if (!notifiedUsers.has(userId)) {
+                        notifiedUsers.add(userId);
+                        try {
+                            await sendMessage(userId, message, env);
+                            notificationCount++;
+                        } catch (error) {
+                            console.error(`Failed to notify user ${userId}:`, error);
+                        }
+                    }
+                }
+            }
+
+            console.log(`Transaction ${transaction.signature}: notified ${notificationCount} users, involved ${involvedAddresses.size} addresses`);
+
+        } catch (error) {
+            console.error('Error processing transaction:', error, 'Transaction:', transaction);
+        }
     }
 }
 
 /**
- * Fetches and displays new coins from Axiom Trade pulse sections
- * Shows coins from New Pairs, Final Stretch, and Migrated sections
+ * Adds a wallet address to the user's watchlist
  *
  * @param {number} chatId - Telegram chat ID
+ * @param {string} address - Wallet address to add
  * @param {Object} env - Environment variables
  */
-async function handlePulseCommand(chatId, env) {
+async function handleAddWalletCommand(chatId, address, env) {
     try {
-        await sendMessage(chatId, '🔄 Fetching new coins from Axiom Trade pulse\\.\\.\\.', env);
-
-        // Fetch data from all three pulse sections
-        const [newPairs, finalStretch, migrated] = await Promise.allSettled([
-            fetchAxiomPulseData('new-pairs'),
-            fetchAxiomPulseData('final-stretch'),
-            fetchAxiomPulseData('migrated')
-        ]);
-
-        let message = '🚀 *Axiom Trade Pulse \\- New Coins*\n\n';
-
-        // Process New Pairs section
-        if (newPairs.status === 'fulfilled' && newPairs.value.length > 0) {
-            message += '🆕 *New Pairs*\n';
-            newPairs.value.slice(0, 5).forEach((coin, index) => {
-                message += formatCoinInfo(coin, index + 1);
-            });
-            message += '\n';
-        }
-
-        // Process Final Stretch section
-        if (finalStretch.status === 'fulfilled' && finalStretch.value.length > 0) {
-            message += '🏁 *Final Stretch*\n';
-            finalStretch.value.slice(0, 5).forEach((coin, index) => {
-                message += formatCoinInfo(coin, index + 1);
-            });
-            message += '\n';
-        }
-
-        // Process Migrated section
-        if (migrated.status === 'fulfilled' && migrated.value.length > 0) {
-            message += '✅ *Migrated to Raydium*\n';
-            migrated.value.slice(0, 5).forEach((coin, index) => {
-                message += formatCoinInfo(coin, index + 1);
-            });
-            message += '\n';
-        }
-
-        // Check if we have any data
-        if (newPairs.status === 'rejected' && finalStretch.status === 'rejected' && migrated.status === 'rejected') {
-            message += '❌ Unable to fetch pulse data from Axiom Trade\\. Please try again later\\.\n\n';
-        } else if (
-            (newPairs.status === 'fulfilled' && newPairs.value.length === 0) &&
-            (finalStretch.status === 'fulfilled' && finalStretch.value.length === 0) &&
-            (migrated.status === 'fulfilled' && migrated.value.length === 0)
-        ) {
-            message += '📭 No new coins found in pulse sections at the moment\\.\n\n';
-        }
-
-        message += '/help \\- Show commands';
-
-        await sendMessage(chatId, message, env);
-    } catch (error) {
-        console.error('Error fetching pulse data:', error);
-        await sendMessage(chatId, '❌ Failed to fetch pulse data from Axiom Trade\\. Please try again later\\.', env);
-    }
-}
-
-/**
- * Fetches and displays currently trending cryptocurrencies
- * Shows name, market cap rank, and BTC price
- * 
- * @param {number} chatId - Telegram chat ID
- * @param {Object} env - Environment variables
- */
-async function handleTrendingCommand(chatId, env) {
-    try {
-        const response = await fetch(`${COINGECKO_API}/search/trending`);
-        if (!response.ok) throw new Error(`API error: ${response.status}`);
-
-        const data = await response.json();
-        let message = '🔥 *Trending Cryptocurrencies*\n\n';
-
-        data.coins.forEach((item, index) => {
-            const coin = item.item;
-            message += `${index + 1}\\. ${escapeMarkdown(coin.name)} \\(${escapeMarkdown(coin.symbol.toUpperCase())}\\)\n` +
-                `Market Cap Rank: \\#${coin.market_cap_rank}\n` +
-                `Price BTC: ${escapeMarkdown(coin.price_btc.toFixed(8))}\n\n`;
-        });
-
-        message += '\n/help \\- Show commands';
-
-        await sendMessage(chatId, message, env);
-    } catch (error) {
-        console.error('Error fetching trending coins:', error);
-        await sendMessage(chatId, '❌ Failed to fetch trending coins\\. Please try again later\\.', env);
-    }
-}
-
-/**
- * Fetches and displays top 10 cryptocurrencies by market cap
- * Shows price, 24h change, market cap, and volume
- * 
- * @param {number} chatId - Telegram chat ID
- * @param {Object} env - Environment variables
- */
-async function handleTop10Command(chatId, env) {
-    try {
-        // Add API version and platform parameters to avoid rate limiting
-        const headers = {
-            'Accept': 'application/json',
-            'User-Agent': 'Telegram Bot'
-        };
-
-        const response = await fetch(
-            `${COINGECKO_API}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=10&page=1&sparkline=false`,
-            { headers }
-        );
-
-        if (!response.ok) {
-            console.error('CoinGecko API error status:', response.status);
-            const errorText = await response.text();
-            console.error('CoinGecko API error response:', errorText);
-            throw new Error(`CoinGecko API error: ${response.status}`);
-        }
-
-        const data = await response.json();
-        let message = '📊 *Top 10 Cryptocurrencies*\n\n';
-
-        data.forEach((coin, index) => {
-            const priceChange = coin.price_change_percentage_24h || 0;
-            const priceChangeIcon = priceChange >= 0 ? '🟢' : '🔴';
-
-            message += `${index + 1}\\. ${escapeMarkdown(coin.name)} \\(${escapeMarkdown(coin.symbol.toUpperCase())}\\)\n`;
-            message += `💵 Price: $${escapeMarkdown(coin.current_price.toLocaleString())}\n`;
-            message += `${priceChangeIcon} 24h: ${escapeMarkdown(priceChange.toFixed(2))}\\%\n`;
-            message += `💎 Market Cap: $${escapeMarkdown(coin.market_cap.toLocaleString())}\n`;
-            message += `📊 Volume: $${escapeMarkdown(coin.total_volume.toLocaleString())}\n\n`;
-        });
-
-        message += '\n/help \\- Show commands';
-
-        await sendMessage(chatId, message, env);
-    } catch (error) {
-        console.error('Error fetching top 10:', error);
-        await sendMessage(chatId, '❌ Failed to fetch top 10 cryptocurrencies\\. Please try again later\\.', env);
-    }
-}
-
-/**
- * Fetches and displays detailed information about a specific cryptocurrency
- * Shows current price, 24h change, high/low, market cap, and volume
- * 
- * @param {number} chatId - Telegram chat ID
- * @param {string} coin - Name or symbol of the cryptocurrency to look up
- * @param {Object} env - Environment variables
- */
-async function handlePriceCommand(chatId, coin, env) {
-    try {
-        // First search for the coin to get its ID
-        const searchResponse = await fetch(
-            `${COINGECKO_API}/search?query=${encodeURIComponent(coin)}`,
-            { headers: { 'Accept': 'application/json', 'User-Agent': 'Telegram Bot' } }
-        );
-
-        if (!searchResponse.ok) {
-            throw new Error(`CoinGecko API error: ${searchResponse.status}`);
-        }
-
-        const searchData = await searchResponse.json();
-        if (!searchData.coins || searchData.coins.length === 0) {
-            await sendMessage(chatId, `❌ Could not find cryptocurrency: ${escapeMarkdown(coin)}`, env);
+        // Validate the wallet address
+        if (!address) {
+            await sendMessage(chatId, '❌ Please provide a wallet address\\.\nExample: `/addwallet 9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM`', env);
             return;
         }
 
-        // Fetch detailed information using the coin ID
-        const coinId = searchData.coins[0].id;
-        const response = await fetch(
-            `${COINGECKO_API}/coins/${coinId}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false`,
-            { headers: { 'Accept': 'application/json', 'User-Agent': 'Telegram Bot' } }
-        );
-
-        if (!response.ok) {
-            throw new Error(`CoinGecko API error: ${response.status}`);
+        if (!isValidSolanaAddress(address)) {
+            await sendMessage(chatId, '❌ Invalid Solana wallet address format\\. Please check and try again\\.', env);
+            return;
         }
 
-        const data = await response.json();
-        const priceChange = data.market_data.price_change_percentage_24h || 0;
-        const priceChangeIcon = priceChange >= 0 ? '🟢' : '🔴';
+        // Check if user already monitors this wallet
+        const userWallets = await getUserWallets(chatId, env);
+        const existingWallet = userWallets.find(w => w.address === address);
+        if (existingWallet) {
+            await sendMessage(chatId, `⚠️ You are already monitoring this wallet address\\.\n\`${escapeMarkdown(address)}\``, env);
+            return;
+        }
 
-        const message = `💰 ${escapeMarkdown(data.name)} \\(${escapeMarkdown(data.symbol.toUpperCase())}\\)\n\n` +
-            `Current Price: $${escapeMarkdown(data.market_data.current_price.usd.toLocaleString())}\n` +
-            `${priceChangeIcon} 24h Change: ${escapeMarkdown(priceChange.toFixed(2))}\\%\n` +
-            `📈 24h High: $${escapeMarkdown(data.market_data.high_24h.usd.toLocaleString())}\n` +
-            `📉 24h Low: $${escapeMarkdown(data.market_data.low_24h.usd.toLocaleString())}\n` +
-            `💎 Market Cap: $${escapeMarkdown(data.market_data.market_cap.usd.toLocaleString())}\n` +
-            `📊 Market Cap Rank: \\#${data.market_cap_rank}\n` +
-            `💫 Volume: $${escapeMarkdown(data.market_data.total_volume.usd.toLocaleString())}\n` +
-            `/help \\- Show commands`;
+        // Check wallet limit (optional)
+        if (userWallets.length >= 10) {
+            await sendMessage(chatId, '❌ You have reached the maximum limit of 10 monitored wallets\\. Please remove some wallets first\\.', env);
+            return;
+        }
 
-        await sendMessage(chatId, message, env);
+        await sendMessage(chatId, '�� Creating webhook for wallet monitoring\\.\\.\\. Please wait\\.', env);
+
+        // Create Helius webhook
+        const webhookResult = await createHeliusWebhook(address, env);
+
+        // Store the wallet for the user
+        await storeUserWallet(chatId, address, webhookResult.webhookID, env);
+
+        // Store the wallet-to-user mapping for notifications
+        await storeWalletToUserMapping(address, chatId, env);
+
+        await sendMessage(chatId,
+            `✅ *Wallet Successfully Added\\!*\n\n` +
+            `Address: \`${escapeMarkdown(address)}\`\n` +
+            `Webhook ID: \`${escapeMarkdown(webhookResult.webhookID)}\`\n\n` +
+            `You will now receive notifications for all transactions involving this wallet\\.`,
+            env
+        );
+
     } catch (error) {
-        console.error('Error fetching coin price:', error);
-        await sendMessage(chatId, `❌ Failed to fetch price for ${escapeMarkdown(coin)}\\. Please try again later\\.`, env);
+        console.error('Error adding wallet:', error);
+        await sendMessage(chatId, '❌ Failed to add wallet\\. Please try again later\\.', env);
     }
 }
 
 /**
- * Fetches pulse data from Axiom Trade API for a specific section
+ * Removes a wallet address from the user's watchlist
  *
- * @param {string} section - The pulse section to fetch ('new-pairs', 'final-stretch', 'migrated')
- * @returns {Promise<Array>} Array of coin data
+ * @param {number} chatId - Telegram chat ID
+ * @param {string} address - Wallet address to remove
+ * @param {Object} env - Environment variables
  */
-async function fetchAxiomPulseData(section) {
+async function handleRemoveWalletCommand(chatId, address, env) {
     try {
-        // Note: These are example endpoints based on common API patterns
-        // The actual Axiom Trade API endpoints may differ
-        const endpoints = {
-            'new-pairs': `${AXIOM_API}/pulse/new-pairs`,
-            'final-stretch': `${AXIOM_API}/pulse/final-stretch`,
-            'migrated': `${AXIOM_API}/pulse/migrated`
+        if (!address) {
+            await sendMessage(chatId, '❌ Please provide a wallet address to remove\\.\nExample: `/removewallet 9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM`', env);
+            return;
+        }
+
+        await sendMessage(chatId, '🔄 Removing wallet from monitoring\\.\\.\\. Please wait\\.', env);
+
+        const success = await removeUserWallet(chatId, address, env);
+
+        if (success) {
+            // Remove from wallet-to-user mapping
+            const key = `wallet_users_${address}`;
+            try {
+                if (env.WALLET_STORAGE) {
+                    const data = await env.WALLET_STORAGE.get(key);
+                    if (data) {
+                        const userList = JSON.parse(data);
+                        const updatedList = userList.filter(id => id !== chatId);
+                        if (updatedList.length > 0) {
+                            await env.WALLET_STORAGE.put(key, JSON.stringify(updatedList));
+                        } else {
+                            await env.WALLET_STORAGE.delete(key);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error updating wallet-to-user mapping:', error);
+            }
+
+            await sendMessage(chatId,
+                `✅ *Wallet Successfully Removed\\!*\n\n` +
+                `Address: \`${escapeMarkdown(address)}\`\n\n` +
+                `You will no longer receive notifications for this wallet\\.`,
+                env
+            );
+        } else {
+            await sendMessage(chatId, '❌ Wallet not found in your monitoring list\\.', env);
+        }
+
+    } catch (error) {
+        console.error('Error removing wallet:', error);
+        await sendMessage(chatId, '❌ Failed to remove wallet\\. Please try again later\\.', env);
+    }
+}
+
+/**
+ * Lists all wallet addresses monitored for the user
+ *
+ * @param {number} chatId - Telegram chat ID
+ * @param {Object} env - Environment variables
+ */
+async function handleMyWalletsCommand(chatId, env) {
+    try {
+        const userWallets = await getUserWallets(chatId, env);
+
+        if (userWallets.length === 0) {
+            await sendMessage(chatId,
+                '📋 *Your Monitored Wallets*\n\n' +
+                'You are not currently monitoring any wallets\\.\n\n' +
+                'Use `/addwallet <address>` to start monitoring a wallet\\.',
+                env
+            );
+            return;
+        }
+
+        let message = `📋 *Your Monitored Wallets \\(${userWallets.length}/10\\)*\n\n`;
+
+        userWallets.forEach((wallet, index) => {
+            const shortAddress = `${wallet.address.substring(0, 8)}\\.\\.\\.${wallet.address.substring(wallet.address.length - 8)}`;
+            const addedDate = new Date(wallet.addedAt).toLocaleDateString();
+
+            message += `${index + 1}\\. \`${escapeMarkdown(shortAddress)}\`\n`;
+            message += `   Added: ${escapeMarkdown(addedDate)}\n`;
+            message += `   [View on Solscan](${SOLSCAN_BASE}/account/${wallet.address})\n\n`;
+        });
+
+        message += 'Use `/removewallet <address>` to stop monitoring a wallet\\.';
+
+        await sendMessage(chatId, message, env);
+
+    } catch (error) {
+        console.error('Error listing wallets:', error);
+        await sendMessage(chatId, '❌ Failed to retrieve your wallet list\\. Please try again later\\.', env);
+    }
+}
+
+/**
+ * Creates a Helius webhook for monitoring wallet transactions
+ * Based on official Helius documentation: https://www.helius.dev/docs/data-streaming/quickstart
+ *
+ * @param {string} walletAddress - Solana wallet address to monitor
+ * @param {Object} env - Environment variables
+ * @returns {Promise<Object>} Webhook creation result
+ */
+async function createHeliusWebhook(walletAddress, env) {
+    try {
+        const workerUrl = `https://${env.WORKER_DOMAIN}${HELIUS_WEBHOOK_ENDPOINT}`;
+
+        // Following Helius official documentation structure
+        const webhookData = {
+            webhookURL: workerUrl,
+            transactionTypes: ["Any"], // Monitor all transaction types
+            accountAddresses: [walletAddress],
+            webhookType: "enhanced", // Use enhanced webhooks for detailed transaction data
+            txnStatus: "all", // Monitor both successful and failed transactions
+            encoding: "jsonParsed" // Get parsed transaction data
         };
 
-        const response = await fetch(endpoints[section], {
+        const response = await fetch(`${HELIUS_API}/webhooks?api-key=${env.HELIUS_API_KEY}`, {
+            method: 'POST',
             headers: {
-                'Accept': 'application/json',
-                'User-Agent': 'Telegram Bot'
-            }
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(webhookData)
         });
 
         if (!response.ok) {
-            console.error(`Axiom API error for ${section}:`, response.status);
-            // If the API is not available, return mock data for demonstration
-            return getMockPulseData(section);
+            const errorData = await response.json();
+            console.error('Helius webhook creation error:', errorData);
+            throw new Error(`Helius API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
         }
 
-        const data = await response.json();
+        const result = await response.json();
+        console.log('Webhook created successfully:', result);
+        return result;
+    } catch (error) {
+        console.error('Error creating Helius webhook:', error);
+        throw error;
+    }
+}
 
-        // Handle different possible response structures
-        if (Array.isArray(data)) {
-            return data;
-        } else if (data.data && Array.isArray(data.data)) {
-            return data.data;
-        } else if (data.tokens && Array.isArray(data.tokens)) {
-            return data.tokens;
-        } else {
-            console.warn(`Unexpected response structure for ${section}:`, data);
-            return [];
+/**
+ * Deletes a Helius webhook
+ *
+ * @param {string} webhookId - Webhook ID to delete
+ * @param {Object} env - Environment variables
+ * @returns {Promise<boolean>} Deletion success
+ */
+async function deleteHeliusWebhook(webhookId, env) {
+    try {
+        const response = await fetch(`${HELIUS_API}/webhooks/${webhookId}?api-key=${env.HELIUS_API_KEY}`, {
+            method: 'DELETE'
+        });
+
+        if (!response.ok) {
+            console.error('Error deleting webhook:', response.status);
+            return false;
+        }
+
+        console.log('Webhook deleted successfully:', webhookId);
+        return true;
+    } catch (error) {
+        console.error('Error deleting Helius webhook:', error);
+        return false;
+    }
+}
+
+/**
+ * Validates a Solana wallet address
+ *
+ * @param {string} address - Address to validate
+ * @returns {boolean} Whether the address is valid
+ */
+function isValidSolanaAddress(address) {
+    if (!address || typeof address !== 'string') return false;
+
+    // Basic Solana address validation (base58, 32-44 characters)
+    const base58Regex = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+    return base58Regex.test(address);
+}
+
+/**
+ * Stores user wallet mapping in Cloudflare KV (if available) or in-memory
+ * In production, you would use Cloudflare KV or a database
+ *
+ * @param {number} chatId - Telegram chat ID
+ * @param {string} walletAddress - Wallet address
+ * @param {string} webhookId - Helius webhook ID
+ * @param {Object} env - Environment variables
+ */
+async function storeUserWallet(chatId, walletAddress, webhookId, env) {
+    const key = `user_wallets_${chatId}`;
+    let userWallets = [];
+
+    try {
+        if (env.WALLET_STORAGE) {
+            const existing = await env.WALLET_STORAGE.get(key);
+            if (existing) {
+                userWallets = JSON.parse(existing);
+            }
+        }
+
+        // Add new wallet if not already exists
+        const existingWallet = userWallets.find(w => w.address === walletAddress);
+        if (!existingWallet) {
+            userWallets.push({
+                address: walletAddress,
+                webhookId: webhookId,
+                addedAt: new Date().toISOString()
+            });
+
+            if (env.WALLET_STORAGE) {
+                await env.WALLET_STORAGE.put(key, JSON.stringify(userWallets));
+            }
         }
     } catch (error) {
-        console.error(`Error fetching ${section} data:`, error);
-        // Return mock data for demonstration if API is not available
-        return getMockPulseData(section);
+        console.error('Error storing user wallet:', error);
     }
 }
 
 /**
- * Returns mock pulse data for demonstration purposes
- * This will be used when the actual Axiom Trade API is not available
+ * Retrieves user wallets from storage
  *
- * @param {string} section - The pulse section
- * @returns {Array} Mock coin data
+ * @param {number} chatId - Telegram chat ID
+ * @param {Object} env - Environment variables
+ * @returns {Promise<Array>} User's wallet list
  */
-function getMockPulseData(section) {
-    const mockData = {
-        'new-pairs': [
-            {
-                name: 'PEPE2.0',
-                symbol: 'PEPE2',
-                price: 0.000001234,
-                marketCap: 1250000,
-                volume24h: 450000,
-                holders: 1250,
-                age: '15m',
-                change24h: 45.67
-            },
-            {
-                name: 'DogeCoin Classic',
-                symbol: 'DOGEC',
-                price: 0.00234,
-                marketCap: 890000,
-                volume24h: 320000,
-                holders: 890,
-                age: '8m',
-                change24h: -12.34
-            }
-        ],
-        'final-stretch': [
-            {
-                name: 'MoonShot Token',
-                symbol: 'MOON',
-                price: 0.0456,
-                marketCap: 2340000,
-                volume24h: 890000,
-                holders: 2100,
-                age: '2h',
-                change24h: 123.45,
-                progress: 85
-            }
-        ],
-        'migrated': [
-            {
-                name: 'Successful Meme',
-                symbol: 'SMEME',
-                price: 0.234,
-                marketCap: 15600000,
-                volume24h: 3400000,
-                holders: 8900,
-                age: '1d',
-                change24h: 234.56,
-                migrationTime: '2h ago'
-            }
-        ]
-    };
+async function getUserWallets(chatId, env) {
+    const key = `user_wallets_${chatId}`;
 
-    return mockData[section] || [];
+    try {
+        if (env.WALLET_STORAGE) {
+            const data = await env.WALLET_STORAGE.get(key);
+            return data ? JSON.parse(data) : [];
+        }
+        return [];
+    } catch (error) {
+        console.error('Error retrieving user wallets:', error);
+        return [];
+    }
 }
 
 /**
- * Formats coin information for display in Telegram message
+ * Removes a wallet from user's watchlist
  *
- * @param {Object} coin - Coin data object
- * @param {number} index - Position in the list
- * @returns {string} Formatted coin information
+ * @param {number} chatId - Telegram chat ID
+ * @param {string} walletAddress - Wallet address to remove
+ * @param {Object} env - Environment variables
+ * @returns {Promise<boolean>} Removal success
  */
-function formatCoinInfo(coin, index) {
-    const priceChangeIcon = (coin.change24h || 0) >= 0 ? '🟢' : '🔴';
-    const priceChange = coin.change24h ? coin.change24h.toFixed(2) : '0.00';
+async function removeUserWallet(chatId, walletAddress, env) {
+    const key = `user_wallets_${chatId}`;
 
-    let info = `${index}\\. ${escapeMarkdown(coin.name || 'Unknown')} \\(${escapeMarkdown((coin.symbol || 'N/A').toUpperCase())}\\)\n`;
+    try {
+        if (env.WALLET_STORAGE) {
+            const data = await env.WALLET_STORAGE.get(key);
+            if (data) {
+                const userWallets = JSON.parse(data);
+                const walletToRemove = userWallets.find(w => w.address === walletAddress);
 
-    if (coin.price) {
-        info += `💰 Price: $${escapeMarkdown(coin.price.toLocaleString())}\n`;
+                if (walletToRemove) {
+                    // Delete the Helius webhook
+                    await deleteHeliusWebhook(walletToRemove.webhookId, env);
+
+                    // Remove from user's list
+                    const updatedWallets = userWallets.filter(w => w.address !== walletAddress);
+                    await env.WALLET_STORAGE.put(key, JSON.stringify(updatedWallets));
+                    return true;
+                }
+            }
+        }
+        return false;
+    } catch (error) {
+        console.error('Error removing user wallet:', error);
+        return false;
     }
-
-    info += `${priceChangeIcon} 24h: ${escapeMarkdown(priceChange)}\\%\n`;
-
-    if (coin.marketCap) {
-        info += `💎 Market Cap: $${escapeMarkdown(coin.marketCap.toLocaleString())}\n`;
-    }
-
-    if (coin.volume24h) {
-        info += `📊 Volume: $${escapeMarkdown(coin.volume24h.toLocaleString())}\n`;
-    }
-
-    if (coin.holders) {
-        info += `👥 Holders: ${escapeMarkdown(coin.holders.toLocaleString())}\n`;
-    }
-
-    if (coin.age) {
-        info += `⏰ Age: ${escapeMarkdown(coin.age)}\n`;
-    }
-
-    if (coin.progress) {
-        info += `📈 Progress: ${escapeMarkdown(coin.progress.toString())}\\%\n`;
-    }
-
-    if (coin.migrationTime) {
-        info += `🚀 Migrated: ${escapeMarkdown(coin.migrationTime)}\n`;
-    }
-
-    return info + '\n';
 }
 
 /**
- * Escapes special characters for Telegram's MarkdownV2 format
- * This is required to properly format messages with special characters
- * 
- * @param {string} text - Text to escape
- * @returns {string} Escaped text safe for MarkdownV2 format
+ * Stores wallet-to-user mapping for webhook notifications
+ *
+ * @param {string} walletAddress - Wallet address
+ * @param {number} chatId - Telegram chat ID
+ * @param {Object} env - Environment variables
  */
-function escapeMarkdown(text) {
-    if (text === undefined || text === null) return '';
-    return text.toString().replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
+async function storeWalletToUserMapping(walletAddress, chatId, env) {
+    const key = `wallet_users_${walletAddress}`;
+
+    try {
+        if (env.WALLET_STORAGE) {
+            let userList = [];
+            const existing = await env.WALLET_STORAGE.get(key);
+            if (existing) {
+                userList = JSON.parse(existing);
+            }
+
+            if (!userList.includes(chatId)) {
+                userList.push(chatId);
+                await env.WALLET_STORAGE.put(key, JSON.stringify(userList));
+            }
+        }
+    } catch (error) {
+        console.error('Error storing wallet-to-user mapping:', error);
+    }
+}
+
+/**
+ * Gets users monitoring a specific wallet
+ *
+ * @param {string} walletAddress - Wallet address
+ * @param {Object} env - Environment variables
+ * @returns {Promise<Array>} List of user IDs monitoring this wallet
+ */
+async function getUsersForWallet(walletAddress, env) {
+    const key = `wallet_users_${walletAddress}`;
+
+    try {
+        if (env.WALLET_STORAGE) {
+            const data = await env.WALLET_STORAGE.get(key);
+            return data ? JSON.parse(data) : [];
+        }
+        return [];
+    } catch (error) {
+        console.error('Error getting users for wallet:', error);
+        return [];
+    }
+}
+
+/**
+ * Formats transaction details for Telegram message
+ *
+ * @param {Object} transaction - Transaction data from Helius
+ * @returns {string} Formatted transaction message
+ */
+function formatTransactionMessage(transaction) {
+    const { signature, err, slot, blockTime, feePayer, fee } = transaction;
+    const txData = transaction.transaction || {};
+
+    let message = `🔔 *New Transaction Detected*\n\n`;
+
+    // Transaction status
+    const status = err ? '❌ Failed' : '✅ Success';
+    message += `Status: ${status}\n`;
+
+    // Basic transaction info
+    message += `Signature: \`${escapeMarkdown(signature)}\`\n`;
+    message += `Slot: ${escapeMarkdown(slot.toString())}\n`;
+    message += `Block Time: ${escapeMarkdown(new Date(blockTime * 1000).toLocaleString())}\n`;
+
+    // Fee information
+    if (fee) {
+        message += `Fee: ${escapeMarkdown((fee / 1000000000).toFixed(6))} SOL\n`;
+    }
+
+    // Fee payer
+    if (feePayer) {
+        message += `Fee Payer: \`${escapeMarkdown(feePayer)}\`\n`;
+    }
+
+    // Token transfers (if available)
+    if (transaction.tokenTransfers && transaction.tokenTransfers.length > 0) {
+        message += `\n💸 *Token Transfers:*\n`;
+        transaction.tokenTransfers.slice(0, 3).forEach((transfer, index) => {
+            const amount = transfer.tokenAmount || 0;
+            const mint = transfer.mint || 'Unknown';
+            const from = transfer.fromUserAccount || 'Unknown';
+            const to = transfer.toUserAccount || 'Unknown';
+
+            message += `${index + 1}\\. ${escapeMarkdown(amount)} tokens\n`;
+            message += `   Mint: \`${escapeMarkdown(mint)}\`\n`;
+            message += `   From: \`${escapeMarkdown(from.substring(0, 8))}\\.\\.\\.\`\n`;
+            message += `   To: \`${escapeMarkdown(to.substring(0, 8))}\\.\\.\\.\`\n\n`;
+        });
+    }
+
+    // SOL transfers (if available)
+    if (transaction.nativeTransfers && transaction.nativeTransfers.length > 0) {
+        message += `\n💰 *SOL Transfers:*\n`;
+        transaction.nativeTransfers.slice(0, 3).forEach((transfer, index) => {
+            const amount = (transfer.amount || 0) / 1000000000; // Convert lamports to SOL
+            const from = transfer.fromUserAccount || 'Unknown';
+            const to = transfer.toUserAccount || 'Unknown';
+
+            message += `${index + 1}\\. ${escapeMarkdown(amount.toFixed(6))} SOL\n`;
+            message += `   From: \`${escapeMarkdown(from.substring(0, 8))}\\.\\.\\.\`\n`;
+            message += `   To: \`${escapeMarkdown(to.substring(0, 8))}\\.\\.\\.\`\n\n`;
+        });
+    }
+
+    // Explorer link
+    message += `\n🔍 [View on Solscan](${SOLSCAN_BASE}/tx/${signature})`;
+
+    return message;
 }
 
 /**
@@ -575,4 +726,16 @@ async function sendMessage(chatId, text, env) {
         console.error('Error sending message:', error);
         throw error;
     }
+}
+
+/**
+ * Escapes special characters for Telegram's MarkdownV2 format
+ * This is required to properly format messages with special characters
+ *
+ * @param {string} text - Text to escape
+ * @returns {string} Escaped text safe for MarkdownV2 format
+ */
+function escapeMarkdown(text) {
+    if (text === undefined || text === null) return '';
+    return text.toString().replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
 }
