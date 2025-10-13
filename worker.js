@@ -25,7 +25,7 @@ export default {
     async fetch(request, env, ctx) {
         // Vérifiez que les tokens existent
         if (!env.TELEGRAM_BOT_TOKEN) {
-            return new Response('TELEGRAM_BOT_TOKEN not configured', { status: 500 });
+            return new Response('TELEGRAM_BOT_TOKEN not configured ', { status: 500 });
         }
         if (!env.HELIUS_API_KEY) {
             return new Response('HELIUS_API_KEY not configured', { status: 500 });
