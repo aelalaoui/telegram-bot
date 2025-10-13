@@ -59,25 +59,49 @@ export default {
             } else if (method === 'GET' && path === '/setwebhook') {
                 return await setTelegramWebhook(encodeURIComponent(`${workerUrl}${WEBHOOK_ENDPOINT}`), env);
             } else if (method === 'POST' && path === '/') {
-                // Diagnostic: quelque chose envoie des POST à la racine
-                console.log('Received POST to root path, this might be a misconfigured webhook');
+                // Helius envoie ses webhooks à la racine - nous devons les traiter
+                console.log('Received POST to root path, checking if it\'s from Helius');
+
+                // Vérifier l'user-agent pour confirmer que c'est Helius
+                const userAgent = request.headers.get('user-agent') || '';
+                console.log('User-Agent:', userAgent);
+
+                if (userAgent.includes('Helius-Webhook-Service')) {
+                    console.log('Confirmed: This is a Helius webhook');
+                    try {
+                        const transactions = await request.json();
+                        console.log('Received Helius webhook data:', JSON.stringify(transactions));
+                        ctx.waitUntil(handleHeliusWebhook(transactions, env));
+                        return new Response('OK', { status: 200 });
+                    } catch (error) {
+                        console.error('Error parsing Helius webhook:', error);
+                        return new Response('Invalid JSON payload', { status: 400 });
+                    }
+                }
+
+                // Fallback: essayer de détecter le type de webhook par le contenu
                 try {
                     const body = await request.text();
-                    console.log('POST body to root:', body);
-                    // Essayer de parser comme JSON pour voir si c'est Telegram ou Helius
+                    console.log('POST body to root (non-Helius):', body.substring(0, 200) + '...');
+
                     const jsonBody = JSON.parse(body);
                     if (jsonBody.message || jsonBody.update_id) {
                         console.log('This looks like a Telegram webhook, redirecting internally');
-                        return await handleTelegramUpdate(jsonBody, env).then(() => new Response('OK', { status: 200 }));
+                        ctx.waitUntil(handleTelegramUpdate(jsonBody, env));
+                        return new Response('OK', { status: 200 });
                     } else if (Array.isArray(jsonBody) || jsonBody.signature) {
-                        console.log('This looks like a Helius webhook, redirecting internally');
+                        console.log('This looks like a Helius webhook (fallback detection), redirecting internally');
                         const transactions = Array.isArray(jsonBody) ? jsonBody : [jsonBody];
-                        return await handleHeliusWebhook(transactions, env).then(() => new Response('OK', { status: 200 }));
+                        ctx.waitUntil(handleHeliusWebhook(transactions, env));
+                        return new Response('OK', { status: 200 });
+                    } else {
+                        console.log('Unknown POST payload type:', Object.keys(jsonBody));
+                        return new Response('OK - Unknown webhook type', { status: 200 });
                     }
                 } catch (e) {
                     console.log('Failed to parse POST body as JSON:', e.message);
+                    return new Response('Invalid JSON', { status: 400 });
                 }
-                return new Response('OK - Root endpoint hit', { status: 200 });
             } else if (method === 'GET' && path === '/') {
                 // Page d'accueil simple pour vérifier que le worker fonctionne
                 return new Response(
