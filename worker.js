@@ -10,7 +10,7 @@
 const WEBHOOK_ENDPOINT = '/webhook';
 
 // Webhook endpoint for Helius transaction notifications
-const HELIUS_WEBHOOK_ENDPOINT = '/webhook';
+const HELIUS_WEBHOOK_ENDPOINT = '/helius-webhook';  // ← Corrigé pour éviter la boucle
 
 // Base URL for Helius API
 const HELIUS_API = 'https://api.helius.xyz/v0';
