@@ -25,7 +25,7 @@ export default {
     async fetch(request, env, ctx) {
         // Vérifiez que les tokens existent
         if (!env.TELEGRAM_BOT_TOKEN) {
-            return new Response('TELEGRAM_BOT_TOKEN not configured ', { status: 500 });
+            return new Response('TELEGRAM_BOT_TOKEN not configured', { status: 500 });
         }
         if (!env.HELIUS_API_KEY) {
             return new Response('HELIUS_API_KEY not configured', { status: 500 });
@@ -37,7 +37,14 @@ export default {
             const method = request.method;
             const workerUrl = `${url.protocol}//${url.host}`;
 
-            console.log('Incoming request:', { path, method });
+            // Log plus détaillé pour diagnostiquer
+            console.log('Incoming request details:', {
+                path,
+                method,
+                url: request.url,
+                headers: Object.fromEntries(request.headers.entries()),
+                userAgent: request.headers.get('user-agent')
+            });
 
             if (method === 'POST' && path === WEBHOOK_ENDPOINT) {
                 const update = await request.json();
@@ -51,7 +58,51 @@ export default {
                 return new Response('OK', { status: 200 });
             } else if (method === 'GET' && path === '/setwebhook') {
                 return await setTelegramWebhook(encodeURIComponent(`${workerUrl}${WEBHOOK_ENDPOINT}`), env);
+            } else if (method === 'POST' && path === '/') {
+                // Diagnostic: quelque chose envoie des POST à la racine
+                console.log('Received POST to root path, this might be a misconfigured webhook');
+                try {
+                    const body = await request.text();
+                    console.log('POST body to root:', body);
+                    // Essayer de parser comme JSON pour voir si c'est Telegram ou Helius
+                    const jsonBody = JSON.parse(body);
+                    if (jsonBody.message || jsonBody.update_id) {
+                        console.log('This looks like a Telegram webhook, redirecting internally');
+                        return await handleTelegramUpdate(jsonBody, env).then(() => new Response('OK', { status: 200 }));
+                    } else if (Array.isArray(jsonBody) || jsonBody.signature) {
+                        console.log('This looks like a Helius webhook, redirecting internally');
+                        const transactions = Array.isArray(jsonBody) ? jsonBody : [jsonBody];
+                        return await handleHeliusWebhook(transactions, env).then(() => new Response('OK', { status: 200 }));
+                    }
+                } catch (e) {
+                    console.log('Failed to parse POST body as JSON:', e.message);
+                }
+                return new Response('OK - Root endpoint hit', { status: 200 });
+            } else if (method === 'GET' && path === '/') {
+                // Page d'accueil simple pour vérifier que le worker fonctionne
+                return new Response(
+                    `<!DOCTYPE html>
+                    <html>
+                    <head><title>Solana Wallet Monitor Bot</title></head>
+                    <body>
+                        <h1>🚀 Solana Wallet Monitor Bot</h1>
+                        <p>Bot is running successfully!</p>
+                        <p>Available endpoints:</p>
+                        <ul>
+                            <li>POST /webhook - Telegram webhooks</li>
+                            <li>POST /helius-webhook - Helius transaction notifications</li>
+                            <li>GET /setwebhook - Configure Telegram webhook</li>
+                        </ul>
+                        <p>Time: ${new Date().toISOString()}</p>
+                    </body>
+                    </html>`,
+                    {
+                        headers: { 'Content-Type': 'text/html' },
+                        status: 200
+                    }
+                );
             } else {
+                console.log(`Unhandled request: ${method} ${path}`);
                 return new Response('Not Found', { status: 404 });
             }
         } catch (error) {
