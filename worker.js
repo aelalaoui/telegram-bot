@@ -10,7 +10,7 @@
 const WEBHOOK_ENDPOINT = '/webhook';
 
 // Webhook endpoint for Helius transaction notifications
-const HELIUS_WEBHOOK_ENDPOINT = '/helius-webhook';  // ← Corrigé pour éviter la boucle
+const HELIUS_WEBHOOK_ENDPOINT = '/helius-webhook';
 
 // Base URL for Helius API
 const HELIUS_API = 'https://api.helius.xyz/v0';
@@ -37,44 +37,34 @@ export default {
             const method = request.method;
             const workerUrl = `${url.protocol}//${url.host}`;
 
-            // Log plus détaillé pour diagnostiquer
-            console.log('Incoming request details:', {
-                path,
-                method,
-                url: request.url,
-                headers: Object.fromEntries(request.headers.entries()),
-                userAgent: request.headers.get('user-agent')
-            });
-
             if (method === 'POST' && path === WEBHOOK_ENDPOINT) {
                 const update = await request.json();
-                console.log('Received Telegram update:', JSON.stringify(update));
                 ctx.waitUntil(handleTelegramUpdate(update, env));
                 return new Response('OK', { status: 200 });
             } else if (method === 'POST' && path === HELIUS_WEBHOOK_ENDPOINT) {
-                const transactions = await request.json();
-                console.log('Received Helius webhook:', JSON.stringify(transactions));
-                ctx.waitUntil(handleHeliusWebhook(transactions, env));
-                return new Response('OK', { status: 200 });
+                try {
+                    const transactions = await request.json();
+                    console.log(`📊 Processing ${transactions.length} transactions`);
+                    ctx.waitUntil(handleHeliusWebhook(transactions, env));
+                    return new Response('OK', { status: 200 });
+                } catch (error) {
+                    console.error('❌ Helius webhook error:', error.message);
+                    return new Response('Processing error', { status: 500 });
+                }
             } else if (method === 'GET' && path === '/setwebhook') {
                 return await setTelegramWebhook(encodeURIComponent(`${workerUrl}${WEBHOOK_ENDPOINT}`), env);
             } else if (method === 'POST' && path === '/') {
-                // Helius envoie ses webhooks à la racine - nous devons les traiter
-                console.log('Received POST to root path, checking if it\'s from Helius');
-
-                // Vérifier l'user-agent pour confirmer que c'est Helius
+                // Helius peut parfois envoyer des webhooks à la racine
                 const userAgent = request.headers.get('user-agent') || '';
-                console.log('User-Agent:', userAgent);
 
                 if (userAgent.includes('Helius-Webhook-Service')) {
-                    console.log('Confirmed: This is a Helius webhook');
                     try {
                         const transactions = await request.json();
-                        console.log('Received Helius webhook data:', JSON.stringify(transactions));
+                        console.log(`📊 Processing ${transactions.length} transactions at root`);
                         ctx.waitUntil(handleHeliusWebhook(transactions, env));
                         return new Response('OK', { status: 200 });
                     } catch (error) {
-                        console.error('Error parsing Helius webhook:', error);
+                        console.error('❌ Helius webhook error at root:', error.message);
                         return new Response('Invalid JSON payload', { status: 400 });
                     }
                 }
@@ -82,24 +72,19 @@ export default {
                 // Fallback: essayer de détecter le type de webhook par le contenu
                 try {
                     const body = await request.text();
-                    console.log('POST body to root (non-Helius):', body.substring(0, 200) + '...');
-
                     const jsonBody = JSON.parse(body);
+
                     if (jsonBody.message || jsonBody.update_id) {
-                        console.log('This looks like a Telegram webhook, redirecting internally');
                         ctx.waitUntil(handleTelegramUpdate(jsonBody, env));
                         return new Response('OK', { status: 200 });
                     } else if (Array.isArray(jsonBody) || jsonBody.signature) {
-                        console.log('This looks like a Helius webhook (fallback detection), redirecting internally');
                         const transactions = Array.isArray(jsonBody) ? jsonBody : [jsonBody];
                         ctx.waitUntil(handleHeliusWebhook(transactions, env));
                         return new Response('OK', { status: 200 });
                     } else {
-                        console.log('Unknown POST payload type:', Object.keys(jsonBody));
                         return new Response('OK - Unknown webhook type', { status: 200 });
                     }
                 } catch (e) {
-                    console.log('Failed to parse POST body as JSON:', e.message);
                     return new Response('Invalid JSON', { status: 400 });
                 }
             } else if (method === 'GET' && path === '/') {
@@ -126,11 +111,10 @@ export default {
                     }
                 );
             } else {
-                console.log(`Unhandled request: ${method} ${path}`);
                 return new Response('Not Found', { status: 404 });
             }
         } catch (error) {
-            console.error('Request handling error:', error);
+            console.error('❌ Request handling error:', error);
             return new Response('Internal Server Error', { status: 500 });
         }
     }
@@ -147,18 +131,18 @@ export default {
 async function setTelegramWebhook(url, env) {
     try {
         const webhookUrl = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook?url=${url}`;
-        console.log('Setting webhook URL:', webhookUrl);
         const response = await fetch(webhookUrl);
         const result = await response.json();
-        console.log('Webhook setup response:', result);
 
         if (response.ok) {
+            console.log('✅ Telegram webhook configured successfully');
             return new Response('Webhook set successfully!', { status: 200 });
         } else {
+            console.error('❌ Webhook setup failed:', result.description);
             return new Response(`Failed to set webhook: ${result.description}`, { status: response.status });
         }
     } catch (error) {
-        console.error('Webhook setup error:', error);
+        console.error('❌ Webhook setup error:', error);
         return new Response('Failed to set webhook', { status: 500 });
     }
 }
@@ -175,17 +159,22 @@ async function setTelegramWebhook(url, env) {
  * @param {Object} env - Environment variables
  */
 async function handleTelegramUpdate(update, env) {
+    console.log('📨 Received Telegram update:', JSON.stringify(update, null, 2));
+
     if (!update.message || !update.message.text) {
-        console.log('Invalid update received:', update);
+        console.log('❌ No message or text in update');
         return;
     }
 
     const chatId = update.message.chat.id;
-    const text = update.message.text.toLowerCase();
-    console.log('Processing message:', { chatId, text });
+    const text = update.message.text;
+    const textLower = text.toLowerCase();
+
+    console.log(`👤 User ${chatId} sent: "${text}"`);
 
     try {
-        if (text === '/start' || text === '/help') {
+        if (textLower === '/start' || textLower === '/help') {
+            console.log('🔧 Processing help command');
             await sendMessage(chatId,
                 'Welcome to the Solana Wallet Monitor Bot\\! 🚀\n\n' +
                 'Available commands:\n' +
@@ -195,182 +184,125 @@ async function handleTelegramUpdate(update, env) {
                 '/help \\- Show this help message',
                 env
             );
-        } else if (text.startsWith('/addwallet ')) {
-            const address = text.split(' ')[1];
+        } else if (textLower.startsWith('/addwallet ')) {
+            const address = text.split(' ')[1]; // Use original text, not lowercase
+            console.log(`🔧 Processing addwallet command with address: "${address}"`);
             await handleAddWalletCommand(chatId, address, env);
-        } else if (text.startsWith('/removewallet ')) {
-            const address = text.split(' ')[1];
+        } else if (textLower.startsWith('/removewallet ')) {
+            const address = text.split(' ')[1]; // Use original text, not lowercase
+            console.log(`🔧 Processing removewallet command with address: "${address}"`);
             await handleRemoveWalletCommand(chatId, address, env);
-        } else if (text === '/mywallets') {
+        } else if (textLower === '/mywallets') {
+            console.log('🔧 Processing mywallets command');
             await handleMyWalletsCommand(chatId, env);
+        } else {
+            console.log(`❓ Unknown command: "${text}"`);
         }
     } catch (error) {
-        console.error('Error handling update:', error);
+        console.error('❌ Error handling update:', error);
         await sendMessage(chatId, '❌ Sorry, an error occurred\\. Please try again later\\.', env);
     }
 }
 
 /**
- * Handles incoming webhooks from Helius API for transaction notifications
- * Following official Helius webhook structure: https://www.helius.dev/docs/data-streaming/quickstart
- *
- * @param {Array} transactions - Array of transaction data from Helius webhook
- * @param {Object} env - Environment variables
- */
-async function handleHeliusWebhook(transactions, env) {
-    console.log('Processing Helius webhook with transactions:', transactions.length);
-
-    // Helius sends an array of transactions
-    if (!Array.isArray(transactions)) {
-        console.error('Invalid webhook payload: expected array of transactions');
-        return;
-    }
-
-    // Process each transaction and notify relevant users
-    for (const transaction of transactions) {
-        try {
-            // Validate transaction structure according to Helius docs
-            if (!transaction.signature || !transaction.slot) {
-                console.log('Skipping invalid transaction:', transaction);
-                continue;
-            }
-
-            // Format the transaction message
-            const message = formatTransactionMessage(transaction);
-
-            // Get wallet addresses involved in this transaction
-            const involvedAddresses = new Set();
-
-            // Add fee payer (always present in Helius enhanced webhooks)
-            if (transaction.feePayer) {
-                involvedAddresses.add(transaction.feePayer);
-            }
-
-            // Add addresses from account keys (Helius enhanced format)
-            if (transaction.accountData) {
-                transaction.accountData.forEach(account => {
-                    if (account.account) {
-                        involvedAddresses.add(account.account);
-                    }
-                });
-            }
-
-            // Add addresses from token transfers (Helius enhanced format)
-            if (transaction.tokenTransfers && Array.isArray(transaction.tokenTransfers)) {
-                transaction.tokenTransfers.forEach(transfer => {
-                    if (transfer.fromUserAccount) involvedAddresses.add(transfer.fromUserAccount);
-                    if (transfer.toUserAccount) involvedAddresses.add(transfer.toUserAccount);
-                });
-            }
-
-            // Add addresses from native transfers (Helius enhanced format)
-            if (transaction.nativeTransfers && Array.isArray(transaction.nativeTransfers)) {
-                transaction.nativeTransfers.forEach(transfer => {
-                    if (transfer.fromUserAccount) involvedAddresses.add(transfer.fromUserAccount);
-                    if (transfer.toUserAccount) involvedAddresses.add(transfer.toUserAccount);
-                });
-            }
-
-            // Add addresses from instruction accounts (fallback for standard format)
-            if (transaction.transaction && transaction.transaction.message && transaction.transaction.message.accountKeys) {
-                transaction.transaction.message.accountKeys.forEach(key => {
-                    if (typeof key === 'string') {
-                        involvedAddresses.add(key);
-                    } else if (key.pubkey) {
-                        involvedAddresses.add(key.pubkey);
-                    }
-                });
-            }
-
-            // Notify users monitoring any of these addresses
-            const notifiedUsers = new Set();
-            let notificationCount = 0;
-
-            for (const address of involvedAddresses) {
-                const users = await getUsersForWallet(address, env);
-                for (const userId of users) {
-                    if (!notifiedUsers.has(userId)) {
-                        notifiedUsers.add(userId);
-                        try {
-                            await sendMessage(userId, message, env);
-                            notificationCount++;
-                        } catch (error) {
-                            console.error(`Failed to notify user ${userId}:`, error);
-                        }
-                    }
-                }
-            }
-
-            console.log(`Transaction ${transaction.signature}: notified ${notificationCount} users, involved ${involvedAddresses.size} addresses`);
-
-        } catch (error) {
-            console.error('Error processing transaction:', error, 'Transaction:', transaction);
-        }
-    }
-}
-
-/**
- * Adds a wallet address to the user's watchlist
- *
+ * Handles the /addwallet command
  * @param {number} chatId - Telegram chat ID
  * @param {string} address - Wallet address to add
  * @param {Object} env - Environment variables
  */
 async function handleAddWalletCommand(chatId, address, env) {
+    console.log(`🔍 handleAddWalletCommand called with address: "${address}"`);
+
     try {
-        // Validate the wallet address
         if (!address) {
-            await sendMessage(chatId, '❌ Please provide a wallet address\\.\nExample: `/addwallet 9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM`', env);
+            console.log('❌ No address provided');
+            await sendMessage(chatId,
+                '❌ Please provide a wallet address\\.\n\n' +
+                'Usage: `/addwallet <wallet_address>`',
+                env
+            );
             return;
         }
 
-        if (!isValidSolanaAddress(address)) {
-            await sendMessage(chatId, '❌ Invalid Solana wallet address format\\. Please check and try again\\.', env);
+        console.log(`🔍 Validating Solana address: "${address}"`);
+        console.log(`   - Length: ${address.length}`);
+        console.log(`   - Trimmed: "${address.trim()}"`);
+
+        const isValid = isValidSolanaAddress(address);
+        console.log(`   - Is valid: ${isValid}`);
+
+        if (!isValid) {
+            console.log('❌ Address validation failed');
+            await sendMessage(chatId,
+                `❌ Invalid Solana wallet address\\.\n\n` +
+                `Address: \`${escapeMarkdown(address)}\`\n` +
+                `Length: ${address.length} characters\n\n` +
+                `Please check the address and try again\\.`,
+                env
+            );
             return;
         }
 
-        // Check if user already monitors this wallet
+        console.log('✅ Address validation passed');
+
+        // Check if wallet is already being monitored by this user
+        console.log('🔍 Checking if wallet is already monitored...');
         const userWallets = await getUserWallets(chatId, env);
-        const existingWallet = userWallets.find(w => w.address === address);
-        if (existingWallet) {
-            await sendMessage(chatId, `⚠️ You are already monitoring this wallet address\\.\n\`${escapeMarkdown(address)}\``, env);
+        console.log(`   - User has ${userWallets.length} wallets`);
+
+        const isAlreadyMonitored = userWallets.some(wallet => wallet.address === address);
+        console.log(`   - Already monitored: ${isAlreadyMonitored}`);
+
+        if (isAlreadyMonitored) {
+            console.log('⚠️ Wallet already monitored');
+            await sendMessage(chatId,
+                '⚠️ This wallet address is already being monitored\\.',
+                env
+            );
             return;
         }
 
-        // Check wallet limit (optional)
-        if (userWallets.length >= 10) {
-            await sendMessage(chatId, '❌ You have reached the maximum limit of 10 monitored wallets\\. Please remove some wallets first\\.', env);
+        // Create Helius webhook for this wallet
+        console.log('🔍 Creating Helius webhook...');
+        const webhookId = await createHeliusWebhook([address], env);
+        console.log(`   - Webhook ID: ${webhookId}`);
+
+        if (!webhookId) {
+            console.log('❌ Failed to create webhook');
+            await sendMessage(chatId,
+                '❌ Failed to create monitoring webhook\\. Please try again later\\.',
+                env
+            );
             return;
         }
 
-        await sendMessage(chatId, '�� Creating webhook for wallet monitoring\\.\\.\\. Please wait\\.', env);
+        // Store the wallet for this user
+        console.log('🔍 Storing user wallet...');
+        await storeUserWallet(chatId, address, webhookId, env);
 
-        // Create Helius webhook
-        const webhookResult = await createHeliusWebhook(address, env);
-
-        // Store the wallet for the user
-        await storeUserWallet(chatId, address, webhookResult.webhookID, env);
-
-        // Store the wallet-to-user mapping for notifications
+        // Store the user-to-wallet mapping for notifications
+        console.log('🔍 Storing wallet-to-user mapping...');
         await storeWalletToUserMapping(address, chatId, env);
 
+        console.log('✅ Wallet added successfully');
         await sendMessage(chatId,
-            `✅ *Wallet Successfully Added\\!*\n\n` +
-            `Address: \`${escapeMarkdown(address)}\`\n` +
-            `Webhook ID: \`${escapeMarkdown(webhookResult.webhookID)}\`\n\n` +
-            `You will now receive notifications for all transactions involving this wallet\\.`,
+            `✅ Successfully added wallet monitoring\\!\n\n` +
+            `**Address:** \`${escapeMarkdown(address.substring(0, 20))}\\.\\.\\.\`\n` +
+            `You will receive notifications for all transactions involving this wallet\\.`,
             env
         );
 
     } catch (error) {
-        console.error('Error adding wallet:', error);
-        await sendMessage(chatId, '❌ Failed to add wallet\\. Please try again later\\.', env);
+        console.error('❌ Error in handleAddWalletCommand:', error);
+        await sendMessage(chatId,
+            '❌ An error occurred while adding the wallet\\. Please try again later\\.',
+            env
+        );
     }
 }
 
 /**
- * Removes a wallet address from the user's watchlist
- *
+ * Handles the /removewallet command
  * @param {number} chatId - Telegram chat ID
  * @param {string} address - Wallet address to remove
  * @param {Object} env - Environment variables
@@ -378,53 +310,43 @@ async function handleAddWalletCommand(chatId, address, env) {
 async function handleRemoveWalletCommand(chatId, address, env) {
     try {
         if (!address) {
-            await sendMessage(chatId, '❌ Please provide a wallet address to remove\\.\nExample: `/removewallet 9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM`', env);
+            await sendMessage(chatId,
+                '❌ Please provide a wallet address\\.\n\n' +
+                'Usage: `/removewallet <wallet_address>`',
+                env
+            );
             return;
         }
-
-        await sendMessage(chatId, '🔄 Removing wallet from monitoring\\.\\.\\. Please wait\\.', env);
 
         const success = await removeUserWallet(chatId, address, env);
 
         if (success) {
             // Remove from wallet-to-user mapping
-            const key = `wallet_users_${address}`;
-            try {
-                if (env.WALLET_STORAGE) {
-                    const data = await env.WALLET_STORAGE.get(key);
-                    if (data) {
-                        const userList = JSON.parse(data);
-                        const updatedList = userList.filter(id => id !== chatId);
-                        if (updatedList.length > 0) {
-                            await env.WALLET_STORAGE.put(key, JSON.stringify(updatedList));
-                        } else {
-                            await env.WALLET_STORAGE.delete(key);
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('Error updating wallet-to-user mapping:', error);
-            }
+            await removeWalletToUserMapping(address, chatId, env);
 
             await sendMessage(chatId,
-                `✅ *Wallet Successfully Removed\\!*\n\n` +
-                `Address: \`${escapeMarkdown(address)}\`\n\n` +
-                `You will no longer receive notifications for this wallet\\.`,
+                `✅ Successfully removed wallet monitoring\\!\n\n` +
+                `**Address:** \`${escapeMarkdown(address.substring(0, 20))}\\.\\.\\.\``,
                 env
             );
         } else {
-            await sendMessage(chatId, '❌ Wallet not found in your monitoring list\\.', env);
+            await sendMessage(chatId,
+                '❌ Wallet address not found in your monitoring list\\.',
+                env
+            );
         }
 
     } catch (error) {
-        console.error('Error removing wallet:', error);
-        await sendMessage(chatId, '❌ Failed to remove wallet\\. Please try again later\\.', env);
+        console.error('❌ Error in handleRemoveWalletCommand:', error);
+        await sendMessage(chatId,
+            '❌ An error occurred while removing the wallet\\. Please try again later\\.',
+            env
+        );
     }
 }
 
 /**
- * Lists all wallet addresses monitored for the user
- *
+ * Handles the /mywallets command
  * @param {number} chatId - Telegram chat ID
  * @param {Object} env - Environment variables
  */
@@ -434,23 +356,20 @@ async function handleMyWalletsCommand(chatId, env) {
 
         if (userWallets.length === 0) {
             await sendMessage(chatId,
-                '📋 *Your Monitored Wallets*\n\n' +
-                'You are not currently monitoring any wallets\\.\n\n' +
+                '📭 You are not monitoring any wallets yet\\.\n\n' +
                 'Use `/addwallet <address>` to start monitoring a wallet\\.',
                 env
             );
             return;
         }
 
-        let message = `📋 *Your Monitored Wallets \\(${userWallets.length}/10\\)*\n\n`;
+        let message = `📊 **Your Monitored Wallets** \\(${userWallets.length}\\)\n\n`;
 
         userWallets.forEach((wallet, index) => {
-            const shortAddress = `${wallet.address.substring(0, 8)}\\.\\.\\.${wallet.address.substring(wallet.address.length - 8)}`;
-            const addedDate = new Date(wallet.addedAt).toLocaleDateString();
-
-            message += `${index + 1}\\. \`${escapeMarkdown(shortAddress)}\`\n`;
-            message += `   Added: ${escapeMarkdown(addedDate)}\n`;
-            message += `   [View on Solscan](${SOLSCAN_BASE}/account/${wallet.address})\n\n`;
+            const shortAddress = `${wallet.address.substring(0, 8)}\\.\\.\\.$`;
+            const addedDate = wallet.addedAt ? new Date(wallet.addedAt).toLocaleDateString() : 'Unknown';
+            message += `${index + 1}\\. \`${shortAddress}\`\n`;
+            message += `   📅 Added: ${escapeMarkdown(addedDate)}\n\n`;
         });
 
         message += 'Use `/removewallet <address>` to stop monitoring a wallet\\.';
@@ -458,31 +377,29 @@ async function handleMyWalletsCommand(chatId, env) {
         await sendMessage(chatId, message, env);
 
     } catch (error) {
-        console.error('Error listing wallets:', error);
-        await sendMessage(chatId, '❌ Failed to retrieve your wallet list\\. Please try again later\\.', env);
+        console.error('❌ Error in handleMyWalletsCommand:', error);
+        await sendMessage(chatId,
+            '❌ An error occurred while retrieving your wallets\\. Please try again later\\.',
+            env
+        );
     }
 }
 
 /**
- * Creates a Helius webhook for monitoring wallet transactions
- * Based on official Helius documentation: https://www.helius.dev/docs/data-streaming/quickstart
- *
- * @param {string} walletAddress - Solana wallet address to monitor
+ * Creates a Helius webhook for monitoring wallet addresses
+ * @param {Array} addresses - Array of wallet addresses to monitor
  * @param {Object} env - Environment variables
- * @returns {Promise<Object>} Webhook creation result
+ * @returns {Promise<string|null>} Webhook ID or null if failed
  */
-async function createHeliusWebhook(walletAddress, env) {
+async function createHeliusWebhook(addresses, env) {
     try {
-        const workerUrl = `https://${env.WORKER_DOMAIN}${HELIUS_WEBHOOK_ENDPOINT}`;
+        const webhookUrl = `${env.WORKER_URL || 'https://your-worker.workers.dev'}${HELIUS_WEBHOOK_ENDPOINT}`;
 
-        // Following Helius official documentation structure
         const webhookData = {
-            webhookURL: workerUrl,
-            transactionTypes: ["Any"], // Monitor all transaction types
-            accountAddresses: [walletAddress],
-            webhookType: "enhanced", // Use enhanced webhooks for detailed transaction data
-            txnStatus: "all", // Monitor both successful and failed transactions
-            encoding: "jsonParsed" // Get parsed transaction data
+            webhookURL: webhookUrl,
+            transactionTypes: ["Any"],
+            accountAddresses: addresses,
+            webhookType: "enhanced"
         };
 
         const response = await fetch(`${HELIUS_API}/webhooks?api-key=${env.HELIUS_API_KEY}`, {
@@ -494,18 +411,496 @@ async function createHeliusWebhook(walletAddress, env) {
         });
 
         if (!response.ok) {
-            const errorData = await response.json();
-            console.error('Helius webhook creation error:', errorData);
-            throw new Error(`Helius API error: ${response.status} - ${errorData.message || 'Unknown error'}`);
+            const errorData = await response.text();
+            console.error('❌ Helius webhook creation failed:', response.status, errorData);
+            return null;
         }
 
         const result = await response.json();
-        console.log('Webhook created successfully:', result);
-        return result;
+        console.log('✅ Helius webhook created:', result.webhookID);
+        return result.webhookID;
+
     } catch (error) {
-        console.error('Error creating Helius webhook:', error);
+        console.error('❌ Error creating Helius webhook:', error);
+        return null;
+    }
+}
+
+/**
+ * Removes a user from the wallet-to-user mapping
+ * @param {string} address - Wallet address
+ * @param {number} chatId - Telegram chat ID to remove
+ * @param {Object} env - Environment variables
+ */
+async function removeWalletToUserMapping(address, chatId, env) {
+    try {
+        if (!env.WALLET_STORAGE) {
+            return;
+        }
+
+        const key = `wallet_users_${address}`;
+        const existingData = await env.WALLET_STORAGE.get(key);
+
+        if (!existingData) {
+            return;
+        }
+
+        const users = JSON.parse(existingData);
+        const userIndex = users.indexOf(chatId);
+
+        if (userIndex > -1) {
+            users.splice(userIndex, 1);
+
+            if (users.length > 0) {
+                await env.WALLET_STORAGE.put(key, JSON.stringify(users));
+            } else {
+                await env.WALLET_STORAGE.delete(key);
+            }
+        }
+    } catch (error) {
+        console.error('❌ Error removing wallet-to-user mapping:', error);
+    }
+}
+
+/**
+ * Handles incoming webhooks from Helius API for transaction notifications
+ * Following official Helius webhook structure: https://www.helius.dev/docs/data-streaming/quickstart
+ *
+ * @param {Array} transactions - Array of transaction data from Helius webhook
+ * @param {Object} env - Environment variables
+ */
+async function handleHeliusWebhook(transactions, env) {
+    try {
+        // Helius sends an array of transactions
+        if (!Array.isArray(transactions)) {
+            console.error('❌ Invalid webhook payload: expected array');
+            return;
+        }
+
+        if (transactions.length === 0) {
+            return;
+        }
+
+        // Limit processing to avoid timeouts on large batches
+        const maxTransactions = 50;
+        const transactionsToProcess = transactions.slice(0, maxTransactions);
+
+        let totalNotifications = 0;
+
+        // Process each transaction and notify relevant users
+        for (const transaction of transactionsToProcess) {
+            try {
+                // Validate transaction structure according to Helius docs
+                if (!transaction || !transaction.signature || !transaction.slot) {
+                    continue;
+                }
+
+                // Format the transaction message with error handling
+                let message;
+                try {
+                    message = formatTransactionMessage(transaction);
+                } catch (formatError) {
+                    console.error('❌ Error formatting transaction:', formatError.message);
+                    continue;
+                }
+
+                // Get wallet addresses involved in this transaction
+                const involvedAddresses = extractInvolvedAddresses(transaction);
+
+                // Notify users monitoring any of these addresses
+                const notifiedUsers = new Set();
+
+                for (const address of involvedAddresses) {
+                    try {
+                        const users = await getUsersForWallet(address, env);
+                        for (const userId of users) {
+                            if (!notifiedUsers.has(userId)) {
+                                notifiedUsers.add(userId);
+                                try {
+                                    await sendMessage(userId, message, env);
+                                    totalNotifications++;
+                                } catch (sendError) {
+                                    console.error(`❌ Failed to notify user ${userId}:`, sendError.message);
+                                }
+                            }
+                        }
+                    } catch (getUserError) {
+                        console.error(`❌ Error getting users for wallet:`, getUserError.message);
+                    }
+                }
+
+            } catch (transactionError) {
+                console.error('❌ Error processing transaction:', transactionError.message);
+                // Continue processing other transactions
+            }
+        }
+
+        if (totalNotifications > 0) {
+            console.log(`✅ Sent ${totalNotifications} notifications for ${transactionsToProcess.length} transactions`);
+        }
+
+    } catch (error) {
+        console.error('❌ Critical error in handleHeliusWebhook:', error);
+        throw error; // Re-throw to be caught by main handler
+    }
+}
+
+/**
+ * Extracts all wallet addresses involved in a transaction
+ * @param {Object} transaction - Transaction data from Helius
+ * @returns {Set} Set of involved wallet addresses
+ */
+function extractInvolvedAddresses(transaction) {
+    const involvedAddresses = new Set();
+
+    // Add fee payer (always present in Helius enhanced webhooks)
+    if (transaction.feePayer) {
+        involvedAddresses.add(transaction.feePayer);
+    }
+
+    // Add addresses from account keys (Helius enhanced format)
+    if (transaction.accountData && Array.isArray(transaction.accountData)) {
+        transaction.accountData.forEach(account => {
+            if (account && account.account) {
+                involvedAddresses.add(account.account);
+            }
+        });
+    }
+
+    // Add addresses from token transfers (Helius enhanced format)
+    if (transaction.tokenTransfers && Array.isArray(transaction.tokenTransfers)) {
+        transaction.tokenTransfers.forEach(transfer => {
+            if (transfer) {
+                if (transfer.fromUserAccount) involvedAddresses.add(transfer.fromUserAccount);
+                if (transfer.toUserAccount) involvedAddresses.add(transfer.toUserAccount);
+            }
+        });
+    }
+
+    // Add addresses from native transfers (Helius enhanced format)
+    if (transaction.nativeTransfers && Array.isArray(transaction.nativeTransfers)) {
+        transaction.nativeTransfers.forEach(transfer => {
+            if (transfer) {
+                if (transfer.fromUserAccount) involvedAddresses.add(transfer.fromUserAccount);
+                if (transfer.toUserAccount) involvedAddresses.add(transfer.toUserAccount);
+            }
+        });
+    }
+
+    // Add addresses from instruction accounts (fallback for standard format)
+    if (transaction.transaction && transaction.transaction.message && transaction.transaction.message.accountKeys) {
+        transaction.transaction.message.accountKeys.forEach(key => {
+            if (key) {
+                if (typeof key === 'string') {
+                    involvedAddresses.add(key);
+                } else if (key.pubkey) {
+                    involvedAddresses.add(key.pubkey);
+                }
+            }
+        });
+    }
+
+    return involvedAddresses;
+}
+
+/**
+ * Formats a transaction from Helius webhook into a readable Telegram message
+ * @param {Object} transaction - Transaction data from Helius
+ * @returns {string} Formatted message for Telegram
+ */
+function formatTransactionMessage(transaction) {
+    try {
+        const signature = transaction.signature;
+        const slot = transaction.slot;
+        const timestamp = transaction.timestamp ? new Date(transaction.timestamp * 1000).toLocaleString() : 'Unknown';
+
+        let message = `🔔 *New Transaction Alert\\!*\n\n`;
+        message += `**Signature:** \`${escapeMarkdown(signature.substring(0, 20))}\\.\\.\\.\`\n`;
+        message += `**Slot:** ${escapeMarkdown(slot.toString())}\n`;
+        message += `**Time:** ${escapeMarkdown(timestamp)}\n`;
+
+        // Add transaction type if available
+        if (transaction.type) {
+            message += `**Type:** ${escapeMarkdown(transaction.type)}\n`;
+        }
+
+        // Add fee information
+        if (transaction.fee) {
+            const feeInSol = (transaction.fee / 1000000000).toFixed(6);
+            message += `**Fee:** ${escapeMarkdown(feeInSol)} SOL\n`;
+        }
+
+        // Add native transfers if present
+        if (transaction.nativeTransfers && transaction.nativeTransfers.length > 0) {
+            message += `\n💰 **Native Transfers:**\n`;
+            transaction.nativeTransfers.forEach((transfer, index) => {
+                if (index < 3) { // Limit to first 3 transfers
+                    const amount = (transfer.amount / 1000000000).toFixed(6);
+                    const from = transfer.fromUserAccount ?
+                        `${transfer.fromUserAccount.substring(0, 8)}\\.\\.\\.$` :
+                        'Unknown';
+                    const to = transfer.toUserAccount ?
+                        `${transfer.toUserAccount.substring(0, 8)}\\.\\.\\.$` :
+                        'Unknown';
+                    message += `• ${escapeMarkdown(amount)} SOL: ${from} → ${to}\n`;
+                }
+            });
+            if (transaction.nativeTransfers.length > 3) {
+                message += `• \\.\\.\\. and ${transaction.nativeTransfers.length - 3} more transfers\n`;
+            }
+        }
+
+        // Add token transfers if present
+        if (transaction.tokenTransfers && transaction.tokenTransfers.length > 0) {
+            message += `\n🪙 **Token Transfers:**\n`;
+            transaction.tokenTransfers.forEach((transfer, index) => {
+                if (index < 3) { // Limit to first 3 transfers
+                    const symbol = transfer.tokenAmount?.uiTokenAmount?.tokenSymbol || 'Unknown Token';
+                    const amount = transfer.tokenAmount?.uiTokenAmount?.uiAmountString || '0';
+                    const from = transfer.fromUserAccount ?
+                        `${transfer.fromUserAccount.substring(0, 8)}\\.\\.\\.$` :
+                        'Unknown';
+                    const to = transfer.toUserAccount ?
+                        `${transfer.toUserAccount.substring(0, 8)}\\.\\.\\.$` :
+                        'Unknown';
+                    message += `• ${escapeMarkdown(amount)} ${escapeMarkdown(symbol)}: ${from} → ${to}\n`;
+                }
+            });
+            if (transaction.tokenTransfers.length > 3) {
+                message += `• \\.\\.\\. and ${transaction.tokenTransfers.length - 3} more transfers\n`;
+            }
+        }
+
+        message += `\n[View on Solscan](${SOLSCAN_BASE}/tx/${signature})`;
+
+        return message;
+    } catch (error) {
+        console.error('❌ Error formatting transaction message:', error);
+        return `🔔 *Transaction Alert*\n\nSignature: \`${escapeMarkdown(transaction.signature.substring(0, 20))}\\.\\.\\.\`\n\n[View on Solscan](${SOLSCAN_BASE}/tx/${transaction.signature})`;
+    }
+}
+
+/**
+ * Sends a message to a Telegram chat
+ * @param {number} chatId - Telegram chat ID
+ * @param {string} text - Message text (supports MarkdownV2)
+ * @param {Object} env - Environment variables
+ */
+async function sendMessage(chatId, text, env) {
+    try {
+        const response = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                chat_id: chatId,
+                text: text,
+                parse_mode: 'MarkdownV2',
+                disable_web_page_preview: true
+            })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(`Telegram API error: ${response.status} - ${errorData.description}`);
+        }
+
+        return await response.json();
+    } catch (error) {
+        console.error('❌ Error sending message:', error.message);
         throw error;
     }
+}
+
+/**
+ * Stores a wallet address for a user
+ * @param {number} chatId - Telegram chat ID
+ * @param {string} address - Wallet address
+ * @param {string} webhookId - Helius webhook ID
+ * @param {Object} env - Environment variables
+ */
+async function storeUserWallet(chatId, address, webhookId, env) {
+    try {
+        if (!env.WALLET_STORAGE) {
+            throw new Error('WALLET_STORAGE not configured');
+        }
+
+        const key = `user_wallets_${chatId}`;
+        const existingData = await env.WALLET_STORAGE.get(key);
+        const wallets = existingData ? JSON.parse(existingData) : [];
+
+        const newWallet = {
+            address: address,
+            webhookId: webhookId,
+            addedAt: new Date().toISOString()
+        };
+
+        wallets.push(newWallet);
+        await env.WALLET_STORAGE.put(key, JSON.stringify(wallets));
+    } catch (error) {
+        console.error('❌ Error storing user wallet:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Removes a wallet address from a user's list
+ * @param {number} chatId - Telegram chat ID
+ * @param {string} address - Wallet address to remove
+ * @param {Object} env - Environment variables
+ * @returns {boolean} Success status
+ */
+async function removeUserWallet(chatId, address, env) {
+    try {
+        if (!env.WALLET_STORAGE) {
+            throw new Error('WALLET_STORAGE not configured');
+        }
+
+        const key = `user_wallets_${chatId}`;
+        const existingData = await env.WALLET_STORAGE.get(key);
+
+        if (!existingData) {
+            return false;
+        }
+
+        const wallets = JSON.parse(existingData);
+        const walletIndex = wallets.findIndex(w => w.address === address);
+
+        if (walletIndex === -1) {
+            return false;
+        }
+
+        const removedWallet = wallets[walletIndex];
+
+        // Delete Helius webhook if webhookId exists
+        if (removedWallet.webhookId) {
+            await deleteHeliusWebhook(removedWallet.webhookId, env);
+        }
+
+        wallets.splice(walletIndex, 1);
+
+        if (wallets.length > 0) {
+            await env.WALLET_STORAGE.put(key, JSON.stringify(wallets));
+        } else {
+            await env.WALLET_STORAGE.delete(key);
+        }
+
+        return true;
+    } catch (error) {
+        console.error('❌ Error removing user wallet:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Gets all wallet addresses monitored by a user
+ * @param {number} chatId - Telegram chat ID
+ * @param {Object} env - Environment variables
+ * @returns {Array} Array of wallet objects
+ */
+async function getUserWallets(chatId, env) {
+    try {
+        if (!env.WALLET_STORAGE) {
+            return [];
+        }
+
+        const key = `user_wallets_${chatId}`;
+        const data = await env.WALLET_STORAGE.get(key);
+        return data ? JSON.parse(data) : [];
+    } catch (error) {
+        console.error('❌ Error getting user wallets:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Stores the mapping of wallet address to users monitoring it
+ * @param {string} address - Wallet address
+ * @param {number} chatId - Telegram chat ID
+ * @param {Object} env - Environment variables
+ */
+async function storeWalletToUserMapping(address, chatId, env) {
+    try {
+        if (!env.WALLET_STORAGE) {
+            throw new Error('WALLET_STORAGE not configured');
+        }
+
+        const key = `wallet_users_${address}`;
+        const existingData = await env.WALLET_STORAGE.get(key);
+        const users = existingData ? JSON.parse(existingData) : [];
+
+        if (!users.includes(chatId)) {
+            users.push(chatId);
+            await env.WALLET_STORAGE.put(key, JSON.stringify(users));
+        }
+    } catch (error) {
+        console.error('❌ Error storing wallet-to-user mapping:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Gets all users monitoring a specific wallet address
+ * @param {string} address - Wallet address
+ * @param {Object} env - Environment variables
+ * @returns {Array} Array of chat IDs
+ */
+async function getUsersForWallet(address, env) {
+    try {
+        if (!env.WALLET_STORAGE) {
+            return [];
+        }
+
+        const key = `wallet_users_${address}`;
+        const data = await env.WALLET_STORAGE.get(key);
+        return data ? JSON.parse(data) : [];
+    } catch (error) {
+        console.error('❌ Error getting users for wallet:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Validates if a string is a valid Solana address
+ * @param {string} address - Address to validate
+ * @returns {boolean} Validation result
+ */
+function isValidSolanaAddress(address) {
+    if (!address || typeof address !== 'string') {
+        return false;
+    }
+
+    // Remove any whitespace
+    address = address.trim();
+
+    // Solana addresses are base58 encoded and exactly 32-44 characters
+    // Base58 alphabet: 123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz
+    const base58Regex = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+    if (!base58Regex.test(address)) {
+        return false;
+    }
+
+    // Additional validation: check for common invalid patterns
+    // Solana addresses shouldn't be all the same character
+    if (/^(.)\1+$/.test(address)) {
+        return false;
+    }
+
+    // Most Solana addresses are 44 characters, but some system accounts can be shorter
+    // Accept addresses between 32-44 characters that match base58 pattern
+    return true;
+}
+
+/**
+ * Escapes special characters for Telegram MarkdownV2
+ * @param {string} text - Text to escape
+ * @returns {string} Escaped text
+ */
+function escapeMarkdown(text) {
+    if (!text) return '';
+    return text.toString().replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
 }
 
 /**
@@ -522,295 +917,14 @@ async function deleteHeliusWebhook(webhookId, env) {
         });
 
         if (!response.ok) {
-            console.error('Error deleting webhook:', response.status);
+            console.error('❌ Error deleting webhook:', response.status);
             return false;
         }
 
-        console.log('Webhook deleted successfully:', webhookId);
+        console.log(`✅ Webhook deleted: ${webhookId}`);
         return true;
     } catch (error) {
-        console.error('Error deleting Helius webhook:', error);
+        console.error('❌ Error deleting Helius webhook:', error.message);
         return false;
     }
-}
-
-/**
- * Validates a Solana wallet address
- *
- * @param {string} address - Address to validate
- * @returns {boolean} Whether the address is valid
- */
-function isValidSolanaAddress(address) {
-    if (!address || typeof address !== 'string') return false;
-
-    // Basic Solana address validation (base58, 32-44 characters)
-    const base58Regex = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-    return base58Regex.test(address);
-}
-
-/**
- * Stores user wallet mapping in Cloudflare KV (if available) or in-memory
- * In production, you would use Cloudflare KV or a database
- *
- * @param {number} chatId - Telegram chat ID
- * @param {string} walletAddress - Wallet address
- * @param {string} webhookId - Helius webhook ID
- * @param {Object} env - Environment variables
- */
-async function storeUserWallet(chatId, walletAddress, webhookId, env) {
-    const key = `user_wallets_${chatId}`;
-    let userWallets = [];
-
-    try {
-        if (env.WALLET_STORAGE) {
-            const existing = await env.WALLET_STORAGE.get(key);
-            if (existing) {
-                userWallets = JSON.parse(existing);
-            }
-        }
-
-        // Add new wallet if not already exists
-        const existingWallet = userWallets.find(w => w.address === walletAddress);
-        if (!existingWallet) {
-            userWallets.push({
-                address: walletAddress,
-                webhookId: webhookId,
-                addedAt: new Date().toISOString()
-            });
-
-            if (env.WALLET_STORAGE) {
-                await env.WALLET_STORAGE.put(key, JSON.stringify(userWallets));
-            }
-        }
-    } catch (error) {
-        console.error('Error storing user wallet:', error);
-    }
-}
-
-/**
- * Retrieves user wallets from storage
- *
- * @param {number} chatId - Telegram chat ID
- * @param {Object} env - Environment variables
- * @returns {Promise<Array>} User's wallet list
- */
-async function getUserWallets(chatId, env) {
-    const key = `user_wallets_${chatId}`;
-
-    try {
-        if (env.WALLET_STORAGE) {
-            const data = await env.WALLET_STORAGE.get(key);
-            return data ? JSON.parse(data) : [];
-        }
-        return [];
-    } catch (error) {
-        console.error('Error retrieving user wallets:', error);
-        return [];
-    }
-}
-
-/**
- * Removes a wallet from user's watchlist
- *
- * @param {number} chatId - Telegram chat ID
- * @param {string} walletAddress - Wallet address to remove
- * @param {Object} env - Environment variables
- * @returns {Promise<boolean>} Removal success
- */
-async function removeUserWallet(chatId, walletAddress, env) {
-    const key = `user_wallets_${chatId}`;
-
-    try {
-        if (env.WALLET_STORAGE) {
-            const data = await env.WALLET_STORAGE.get(key);
-            if (data) {
-                const userWallets = JSON.parse(data);
-                const walletToRemove = userWallets.find(w => w.address === walletAddress);
-
-                if (walletToRemove) {
-                    // Delete the Helius webhook
-                    await deleteHeliusWebhook(walletToRemove.webhookId, env);
-
-                    // Remove from user's list
-                    const updatedWallets = userWallets.filter(w => w.address !== walletAddress);
-                    await env.WALLET_STORAGE.put(key, JSON.stringify(updatedWallets));
-                    return true;
-                }
-            }
-        }
-        return false;
-    } catch (error) {
-        console.error('Error removing user wallet:', error);
-        return false;
-    }
-}
-
-/**
- * Stores wallet-to-user mapping for webhook notifications
- *
- * @param {string} walletAddress - Wallet address
- * @param {number} chatId - Telegram chat ID
- * @param {Object} env - Environment variables
- */
-async function storeWalletToUserMapping(walletAddress, chatId, env) {
-    const key = `wallet_users_${walletAddress}`;
-
-    try {
-        if (env.WALLET_STORAGE) {
-            let userList = [];
-            const existing = await env.WALLET_STORAGE.get(key);
-            if (existing) {
-                userList = JSON.parse(existing);
-            }
-
-            if (!userList.includes(chatId)) {
-                userList.push(chatId);
-                await env.WALLET_STORAGE.put(key, JSON.stringify(userList));
-            }
-        }
-    } catch (error) {
-        console.error('Error storing wallet-to-user mapping:', error);
-    }
-}
-
-/**
- * Gets users monitoring a specific wallet
- *
- * @param {string} walletAddress - Wallet address
- * @param {Object} env - Environment variables
- * @returns {Promise<Array>} List of user IDs monitoring this wallet
- */
-async function getUsersForWallet(walletAddress, env) {
-    const key = `wallet_users_${walletAddress}`;
-
-    try {
-        if (env.WALLET_STORAGE) {
-            const data = await env.WALLET_STORAGE.get(key);
-            return data ? JSON.parse(data) : [];
-        }
-        return [];
-    } catch (error) {
-        console.error('Error getting users for wallet:', error);
-        return [];
-    }
-}
-
-/**
- * Formats transaction details for Telegram message
- *
- * @param {Object} transaction - Transaction data from Helius
- * @returns {string} Formatted transaction message
- */
-function formatTransactionMessage(transaction) {
-    const { signature, err, slot, blockTime, feePayer, fee } = transaction;
-    const txData = transaction.transaction || {};
-
-    let message = `🔔 *New Transaction Detected*\n\n`;
-
-    // Transaction status
-    const status = err ? '❌ Failed' : '✅ Success';
-    message += `Status: ${status}\n`;
-
-    // Basic transaction info
-    message += `Signature: \`${escapeMarkdown(signature)}\`\n`;
-    message += `Slot: ${escapeMarkdown(slot.toString())}\n`;
-    message += `Block Time: ${escapeMarkdown(new Date(blockTime * 1000).toLocaleString())}\n`;
-
-    // Fee information
-    if (fee) {
-        message += `Fee: ${escapeMarkdown((fee / 1000000000).toFixed(6))} SOL\n`;
-    }
-
-    // Fee payer
-    if (feePayer) {
-        message += `Fee Payer: \`${escapeMarkdown(feePayer)}\`\n`;
-    }
-
-    // Token transfers (if available)
-    if (transaction.tokenTransfers && transaction.tokenTransfers.length > 0) {
-        message += `\n💸 *Token Transfers:*\n`;
-        transaction.tokenTransfers.slice(0, 3).forEach((transfer, index) => {
-            const amount = transfer.tokenAmount || 0;
-            const mint = transfer.mint || 'Unknown';
-            const from = transfer.fromUserAccount || 'Unknown';
-            const to = transfer.toUserAccount || 'Unknown';
-
-            message += `${index + 1}\\. ${escapeMarkdown(amount)} tokens\n`;
-            message += `   Mint: \`${escapeMarkdown(mint)}\`\n`;
-            message += `   From: \`${escapeMarkdown(from.substring(0, 8))}\\.\\.\\.\`\n`;
-            message += `   To: \`${escapeMarkdown(to.substring(0, 8))}\\.\\.\\.\`\n\n`;
-        });
-    }
-
-    // SOL transfers (if available)
-    if (transaction.nativeTransfers && transaction.nativeTransfers.length > 0) {
-        message += `\n💰 *SOL Transfers:*\n`;
-        transaction.nativeTransfers.slice(0, 3).forEach((transfer, index) => {
-            const amount = (transfer.amount || 0) / 1000000000; // Convert lamports to SOL
-            const from = transfer.fromUserAccount || 'Unknown';
-            const to = transfer.toUserAccount || 'Unknown';
-
-            message += `${index + 1}\\. ${escapeMarkdown(amount.toFixed(6))} SOL\n`;
-            message += `   From: \`${escapeMarkdown(from.substring(0, 8))}\\.\\.\\.\`\n`;
-            message += `   To: \`${escapeMarkdown(to.substring(0, 8))}\\.\\.\\.\`\n\n`;
-        });
-    }
-
-    // Explorer link
-    message += `\n🔍 [View on Solscan](${SOLSCAN_BASE}/tx/${signature})`;
-
-    return message;
-}
-
-/**
- * Sends a message to a Telegram chat
- * Handles message formatting and error handling
- * 
- * @param {number} chatId - Telegram chat ID
- * @param {string} text - Message text (with MarkdownV2 formatting)
- * @param {Object} env - Environment variables
- * @returns {Promise<Object>} Telegram API response
- */
-async function sendMessage(chatId, text, env) {
-    try {
-        const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-        console.log('Sending message:', { chatId, text });
-
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                chat_id: chatId,
-                text: text,
-                parse_mode: 'MarkdownV2'
-            }),
-        });
-
-        const responseData = await response.json();
-        console.log('Telegram API response:', responseData);
-
-        if (!response.ok) {
-            console.error('Telegram API error:', responseData);
-            throw new Error(`Telegram API error: ${response.status} - ${JSON.stringify(responseData)}`);
-        }
-
-        return responseData;
-    } catch (error) {
-        console.error('Error sending message:', error);
-        throw error;
-    }
-}
-
-/**
- * Escapes special characters for Telegram's MarkdownV2 format
- * This is required to properly format messages with special characters
- *
- * @param {string} text - Text to escape
- * @returns {string} Escaped text safe for MarkdownV2 format
- */
-function escapeMarkdown(text) {
-    if (text === undefined || text === null) return '';
-    return text.toString().replace(/([_*[\]()~`>#+\-=|{}.!])/g, '\\$1');
 }
